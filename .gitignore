@@ -1,0 +1,3 @@
+# Ignore Mac system files and scratchpad files
+.DS_Store
+.scratchpad
