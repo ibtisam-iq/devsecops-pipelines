@@ -8,6 +8,34 @@ The purpose is not to build applications, but to demonstrate how real-world appl
 
 ---
 
+## Getting Started
+
+This repository relies on Git submodules for application source code.
+
+Clone the repository with submodules:
+
+```bash
+git clone --recurse-submodules https://github.com/ibtisam-iq/devsecops-pipelines.git
+cd devsecops-pipelines
+```
+
+If you already cloned without submodules, run:
+
+```bash
+git submodule update --init --recursive
+```
+
+---
+
+```bash
+git submodule update --remote --merge
+git add .
+git commit -m "chore: update all submodules to latest"
+git push
+```
+
+---
+
 ## What This Repository Demonstrates
 
 * Building pipelines around existing codebases

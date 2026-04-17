@@ -1,0 +1,51 @@
+services:
+  web:
+    build: .
+    image: ibtisamiq-bankapp
+    container_name: bank-web
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+
+    env_file:
+      - .env  # Loads environment variables from a .env file
+
+    depends_on:
+      db:
+        condition: service_healthy  # Ensures MySQL container is ready before starting the app
+
+    networks:
+      - app-network  # Connects to a custom network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]  # Checks app health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  db:
+    image: mysql:8  # Uses official MySQL image
+    container_name: mysql-db
+    restart: unless-stopped
+
+    env_file:
+      - .env  # Loads database credentials
+
+    volumes:
+      - mysql_data:/var/lib/mysql  # Persists MySQL data
+
+    networks:
+      - app-network  # Same network as the web service
+
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "db", "-uroot", "-p$MYSQL_ROOT_PASSWORD"]  # Checks DB readiness
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-network:
+    driver: bridge  # Allows communication between containers
+
+volumes:
+  mysql_data:  # Stores MySQL database files persistently
