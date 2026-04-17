@@ -1,3 +1,6 @@
 [submodule "pipelines/java-monolith/app"]
 	path = pipelines/java-monolith/app
 	url = https://github.com/ibtisam-iq/java-monolith-app.git
+[submodule "pipelines/python-monolith/app"]
+	path = pipelines/python-monolith/app
+	url = https://github.com/ibtisam-iq/python-monolith-app.git
