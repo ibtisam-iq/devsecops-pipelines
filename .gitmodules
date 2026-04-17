@@ -7,3 +7,6 @@
 [submodule "pipelines/node-monolith/2tier/app"]
 	path = pipelines/node-monolith/2tier/app
 	url = https://github.com/ibtisam-iq/node-monolith-2tier-app.git
+[submodule "pipelines/node-monolith/3tier/app"]
+	path = pipelines/node-monolith/3tier/app
+	url = https://github.com/ibtisam-iq/node-monolith-3tier-app.git
