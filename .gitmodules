@@ -4,3 +4,6 @@
 [submodule "pipelines/python-monolith/app"]
 	path = pipelines/python-monolith/app
 	url = https://github.com/ibtisam-iq/python-monolith-app.git
+[submodule "pipelines/node-monolith/2tier/app"]
+	path = pipelines/node-monolith/2tier/app
+	url = https://github.com/ibtisam-iq/node-monolith-2tier-app.git
