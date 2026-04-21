@@ -683,8 +683,7 @@ Without `dir(APP_DIR)`, Maven would look for `pom.xml` in the workspace root, no
 
 | Topic | File |
 |---|---|
-| Full CI/CD stack setup | [cicd-stack-setup.md](./cicd-stack-setup.md) |
-| Repository and pipeline architecture | [architecture.md](./architecture.md) |
+| Full CI/CD stack setup | [cicd-stack-setup.md](../../../docs/cicd-stack-setup.md) |
 | Tool configuration rationale | [tool-configuration.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/tool-configuration.md) |
 | Credential types and injection | [credentials.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/credentials.md) |
 | SonarQube ↔ Jenkins integration | [sonar-jenkins.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/sonarqube/sonar-jenkins.md) |
