@@ -48,9 +48,13 @@ pipeline {
         // ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         // ECR_IMAGE      = "${ECR_REGISTRY}/${APP_NAME}"
 
-        // ── Registry URLs
-        NEXUS_URL      = 'https://nexus.ibtisam-iq.com'
-        NEXUS_DOCKER   = 'nexus.ibtisam-iq.com'          // host:port for docker login
+        // ── Nexus Registry — path-based routing (no dedicated Docker port needed)
+        // Image format: nexus.ibtisam-iq.com/docker-hosted/bankapp:<tag>
+        // Nexus repo must be created with "Path based routing" selected (not port-based).
+        // Docker Bearer Token Realm must be active in Security → Realms.
+        NEXUS_URL         = 'https://nexus.ibtisam-iq.com'
+        NEXUS_DOCKER      = 'nexus.ibtisam-iq.com'       // host for docker login
+        NEXUS_DOCKER_REPO = 'docker-hosted'              // repo name segment in URL path
 
         // ── Source (submodule path inside this repo)
         APP_DIR        = 'pipelines/java-monolith/app'
@@ -354,12 +358,18 @@ pipeline {
 
         // ────────────────────────────────────────────────
         // STAGE 12 — Push to Nexus Docker Registry
-        // nexus.ibtisam-iq.com/bankapp:<tag>
+        // Uses path-based routing — no dedicated Docker port needed.
+        // Image URL format: nexus.ibtisam-iq.com/docker-hosted/bankapp:<tag>
+        //
+        // Pre-requisites in Nexus UI:
+        //   1. Create hosted Docker repo with "Path based routing" selected
+        //   2. Security → Realms → enable "Docker Bearer Token Realm"
+        //
         // Credential ID: nexus-creds (Username with Password)
         // ────────────────────────────────────────────────
         stage('Push to Nexus Registry') {
             steps {
-                echo "📤 Pushing image to Nexus Docker registry..."
+                echo "📤 Pushing image to Nexus Docker registry (path-based)..."
                 withCredentials([usernamePassword(
                     credentialsId: 'nexus-creds',
                     usernameVariable: 'NEXUS_USER',
@@ -367,10 +377,10 @@ pipeline {
                 )]) {
                     sh """
                         echo "\${NEXUS_PASS}" | docker login ${NEXUS_DOCKER} -u "\${NEXUS_USER}" --password-stdin
-                        docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG}
-                        docker tag ${IMAGE_NAME}:latest       ${NEXUS_DOCKER}/${APP_NAME}:latest
-                        docker push ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG}
-                        docker push ${NEXUS_DOCKER}/${APP_NAME}:latest
+                        docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${NEXUS_DOCKER}/${NEXUS_DOCKER_REPO}/${APP_NAME}:${IMAGE_TAG}
+                        docker tag ${IMAGE_NAME}:latest       ${NEXUS_DOCKER}/${NEXUS_DOCKER_REPO}/${APP_NAME}:latest
+                        docker push ${NEXUS_DOCKER}/${NEXUS_DOCKER_REPO}/${APP_NAME}:${IMAGE_TAG}
+                        docker push ${NEXUS_DOCKER}/${NEXUS_DOCKER_REPO}/${APP_NAME}:latest
                         docker logout ${NEXUS_DOCKER}
                     """
                 }
@@ -486,17 +496,18 @@ pipeline {
             )
 
             // ── Docker image cleanup
+            // Nexus image tag uses path-based format: host/repo-name/image:tag
             // ECR lines stay commented until ECR_IMAGE is defined in environment {}
             echo '🧹 Cleaning up local Docker images...'
             sh """
-                docker rmi ${IMAGE_NAME}:${IMAGE_TAG}               || true
-                docker rmi ${IMAGE_NAME}:latest                     || true
-                docker rmi ${GHCR_IMAGE}:${IMAGE_TAG}               || true
-                docker rmi ${GHCR_IMAGE}:latest                     || true
-                docker rmi ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG}  || true
-                docker rmi ${NEXUS_DOCKER}/${APP_NAME}:latest        || true
-                # docker rmi \${ECR_IMAGE}:${IMAGE_TAG}             || true  (uncomment with ECR vars)
-                # docker rmi \${ECR_IMAGE}:latest                   || true  (uncomment with ECR vars)
+                docker rmi ${IMAGE_NAME}:${IMAGE_TAG}                                    || true
+                docker rmi ${IMAGE_NAME}:latest                                          || true
+                docker rmi ${GHCR_IMAGE}:${IMAGE_TAG}                                   || true
+                docker rmi ${GHCR_IMAGE}:latest                                         || true
+                docker rmi ${NEXUS_DOCKER}/${NEXUS_DOCKER_REPO}/${APP_NAME}:${IMAGE_TAG} || true
+                docker rmi ${NEXUS_DOCKER}/${NEXUS_DOCKER_REPO}/${APP_NAME}:latest       || true
+                # docker rmi \${ECR_IMAGE}:${IMAGE_TAG}                                 || true  (uncomment with ECR vars)
+                # docker rmi \${ECR_IMAGE}:latest                                       || true  (uncomment with ECR vars)
             """
             sh 'rm -rf cd-repo'
             cleanWs()
