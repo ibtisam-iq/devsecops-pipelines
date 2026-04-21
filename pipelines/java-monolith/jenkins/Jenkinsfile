@@ -34,7 +34,7 @@ pipeline {
         GROUP_ID       = 'com.ibtisamiq'
 
         // ── Docker Hub image
-        DOCKER_USER    = 'ibtisam-iq'
+        DOCKER_USER    = 'mibtisam'
         IMAGE_NAME     = "${DOCKER_USER}/${APP_NAME}"
         // IMAGE_TAG is set dynamically in the "Versioning" stage below
 
@@ -44,7 +44,7 @@ pipeline {
 
         // ── AWS ECR
         // AWS_REGION     = 'us-east-1'
-        // AWS_ACCOUNT_ID = '123456789012'                          // replace with your account ID
+        // AWS_ACCOUNT_ID = '123456789012'                          
         // ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         // ECR_IMAGE      = "${ECR_REGISTRY}/${APP_NAME}"
 
