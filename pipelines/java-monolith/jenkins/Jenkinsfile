@@ -458,9 +458,9 @@ pipeline {
                         # sed -i "s|image: ibtisam-iq/bankapp:.*|image: ibtisam-iq/bankapp:${IMAGE_TAG}|g" \\
                         #     deployments/java-monolith/deployment.yaml
 
-                        echo "IMAGE_TAG=${IMAGE_TAG}" > java-monolith-image.env
+                        echo "IMAGE_TAG=${IMAGE_TAG}" > systems/java-monolith/image.env
 
-                        git add .
+                        git add systems/java-monolith/image.env
                         git commit -m "ci: update bankapp image tag to ${IMAGE_TAG} [skip ci]" || echo "Nothing to commit"
                         git push origin main
                     """
