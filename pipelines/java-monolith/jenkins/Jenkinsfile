@@ -490,7 +490,7 @@ pipeline {
             recordCoverage(
                 tools: [[
                     parser: 'JACOCO',
-                    pattern: "${APP_DIR}/target/jacoco.exec"
+                    pattern: "${APP_DIR}/target/site/jacoco/jacoco.xml"
                 ]],
                 sourceCodeRetention: 'EVERY_BUILD'
             )
