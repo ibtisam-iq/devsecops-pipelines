@@ -1,11 +1,6 @@
 # DevSecOps Pipelines
 
-> **The CI side of a two-repo GitOps architecture.**
-> This repository takes real applications as input and runs them through secure, automated CI pipelines — building artifacts, scanning for vulnerabilities, pushing to registries, and triggering deployment in the CD repo.
-
----
-
-## Tech Stack
+**The CI layer of my three-repo GitOps architecture — where application code gets built, secured, packaged, and handed off to the deployment layer.**
 
 ![Jenkins](https://img.shields.io/badge/Jenkins-CI%2FCD-D24939?logo=jenkins&logoColor=white)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI%2FCD-2088FF?logo=githubactions&logoColor=white)
@@ -17,98 +12,124 @@
 
 ---
 
-## What Is This Repository?
+## What I Built Here
 
-This is **not** an application repository.
-This is the **CI side** of a two-repo GitOps architecture — it answers the question:
+I built this repository to be the automated CI backbone for multiple applications I own and maintain.
 
-> *"Given application source code, how do you build, test, scan, and deliver a production-ready artifact in an automated and secure way?"*
+Each application I work on lives in its own dedicated repository — some forked from upstream projects and heavily modernized by me, others built from scratch. Once an application is containerized and validated locally, I onboard it here as a Git submodule and build a full DevSecOps pipeline around it.
 
-Each pipeline inside this repo takes a real application (linked as a Git submodule) and runs it through a complete DevSecOps CI pipeline — the way real platform and DevSecOps teams operate.
+The goal of this repo is to demonstrate something specific: **I can take any application — Java, Node.js, Python, or otherwise — and build a production-grade, security-hardened CI pipeline for it using any CI tool.** Not configure a template once. Actually build, run, debug, and validate it end to end.
 
-### Two-Repo Architecture
-
-```
-┌─────────────────────────────────────┐     ┌──────────────────────────────────────────┐
-│          devsecops-pipelines          │     │      platform-engineering-systems        │
-│                                       │     │                                          │
-│  CI Side                              │     │  CD + Infrastructure Side                │
-│  ───────────────────────────────────  │     │  ────────────────────────────────────    │
-│  • Checkout source code                │────▶│  • Deploy to EC2, ECS, EKS, Lambda, … │
-│  • Build artifact (JAR / wheel / etc.) │     │  • Provision infra (Terraform)           │
-│  • Run tests + SonarQube quality gate  │     │  • Orchestrate (Helm, ArgoCD)            │
-│  • Trivy vulnerability scan            │     │  • GitOps sync (ArgoCD watches that)     │
-│  • Push artifact to Nexus              │     │                                          │
-│  • Build + push Docker image           │     │                                          │
-│    (to ECR / Nexus / Docker Hub)       │     │                                          │
-│  • Update image tag in CD repo ────────────────────────────────▶      (triggers CD)       │
-└─────────────────────────────────────┘     └──────────────────────────────────────────┘
-```
-
-👉 CD + Infrastructure repo: [platform-engineering-systems](https://github.com/ibtisam-iq/platform-engineering-systems)
+> I built and ran every pipeline in this repository against my own self-hosted CI/CD stack — Jenkins at `https://jenkins.ibtisam-iq.com`, SonarQube at `https://sonar.ibtisam-iq.com`, and Nexus at `https://nexus.ibtisam-iq.com`. How I provisioned and configured that stack is documented in [`docs/cicd-stack-setup.md`](docs/cicd-stack-setup.md).
 
 ---
 
-## CI Pipeline Stages
+## Where This Repo Fits
 
-Every pipeline in this repo follows the same stage sequence, adapted per language and tool:
+This is **Repo 2** in a deliberate three-repo separation of concerns:
 
 ```
-1. Checkout
-   └─ Clone application source via Git submodule
+Repo 1 — Application Source           Repo 2 — CI (this repo)                  Repo 3 — Deployment
+──────────────────────────            ─────────────────────────────────         ───────────────────────────
+java-monolith-app              ──▶    devsecops-pipelines                ──▶   platform-engineering-systems
+node-monolith-app                      Checkout → Build → Test                   EC2 · ECS · EKS · GitOps
+python-monolith-app                    SonarQube quality gate                    Helm · Terraform · ArgoCD
+(each is my own repo)                  Trivy vulnerability scan
+                                       Push JAR/wheel/tarball → Nexus
+                                       Build & scan Docker image
+                                       Push image → registry
+                                       Update image tag in Repo 3  ────────────────────────────────────────▶
+                                                                                 ArgoCD detects & deploys
+```
 
-2. Build
-   └─ Compile and package the application
-        Java   → mvn clean package
-        Node   → npm install && npm run build
-        Python → pip install -r requirements.txt
+Every application in Repo 1 is a repository I own. Some I forked and modernized — updating `pom.xml`, adding Dockerfiles, `compose.yml`, environment variable standardization, and health probes — so they could actually run in containers and survive a Kubernetes liveness check. That modernization work is documented inside each application's own README.
 
-3. Test
-   └─ Run unit + integration tests
-        Java   → mvn test
-        Node   → npm test
-        Python → pytest
+---
 
-4. Code Quality
-   └─ SonarQube static analysis
-        Enforces quality gate before proceeding
+## How I Onboard Each Application
 
-5. Artifact Push (non-container)
-   └─ Upload built artifact to Nexus Repository Manager
-        Java   → JAR / WAR pushed to Nexus Maven repo
-        Python → wheel pushed to Nexus PyPI repo
-        Node   → tarball pushed to Nexus npm repo
+For every application I add to this repo, I follow the same sequence:
 
-6. Docker Build
-   └─ Build Docker image from application Dockerfile
+**Step 1 — Fork and modernize the application source repo**
 
-7. Image Scan
-   └─ Trivy scans the image for CVEs before pushing
-        Fails pipeline on CRITICAL vulnerabilities
+I fork the upstream repo into my own GitHub account, then did everything needed to make it production-ready: dependency upgrades, environment variable refactoring, multi-stage Dockerfile, `compose.yml`, `.dockerignore`, `.gitignore`, and health endpoint configuration. The application lives in its own repo — independently versioned and documented.
 
-8. Image Push
-   └─ Push Docker image to registry
-        Options: AWS ECR / Nexus Docker / Docker Hub
+**Step 2 — Add it here as a Git submodule**
 
-9. Tag Update (CI → CD Handoff)
-   └─ Update image tag in platform-engineering-systems repo
-        ArgoCD / CD pipeline detects the change and deploys
+```bash
+git submodule add https://github.com/ibtisam-iq/<app-repo>.git pipelines/<app-name>/app
+git submodule update --init --recursive
+```
+
+The submodule pins to a specific commit. When I update the application source — fix a build issue, add a new config, adjust a dependency — I pull the latest into this repo:
+
+```bash
+git submodule update --remote --merge
+git add .
+git commit -m "chore: update <app-name> submodule to latest"
+git push
+```
+
+**Step 3 — Read the application before writing a single pipeline line**
+
+I read `pom.xml` (or `package.json`, or `requirements.txt`), the `Dockerfile`, and `application.properties` before writing anything. The pipeline has to know: what is the build command, what is the artifact filename, what port does the app expose, what environment variables does it need, what does the healthcheck endpoint look like.
+
+**Step 4 — Write the Jenkinsfile**
+
+A declarative Jenkins pipeline covering all DevSecOps stages. I ran this against my live Jenkins instance, debugged real errors, and validated each stage produced the expected output — artifact in Nexus, image in the registry, quality gate passed.
+
+**Step 5 — Write the GitHub Actions workflow**
+
+The same pipeline logic re-implemented as a GitHub Actions workflow — same stages, different syntax, different runner model. Both pipelines are independently runnable and cover the full CI sequence.
+
+---
+
+## CI Pipeline Stage Sequence
+
+Every pipeline I wrote in this repo follows this stage sequence, adapted to the language and build tool of the specific application:
+
+```
+1.  Checkout          → Clone this repo with submodules; app source populates pipelines/<app>/app/
+2.  Versioning        → Extract version from pom.xml / package.json / setup.py
+3.  Build             → Compile and package
+                          Java   → mvn clean package
+                          Node   → npm ci && npm run build
+                          Python → pip install && python -m build
+4.  Test              → Run unit + integration tests with coverage
+                          Java   → mvn test (JaCoCo coverage report)
+                          Node   → npm test
+                          Python → pytest --cov
+5.  SonarQube Scan    → Static analysis via sonar-scanner
+                        Configured server: sonar-server (https://sonar.ibtisam-iq.com)
+                        Configured credential ID: sonarqube-token
+6.  Quality Gate      → waitForQualityGate() — pipeline fails here if gate is not passed
+7.  Artifact Push     → Upload built artifact to Nexus
+                          Java   → JAR to maven-releases / maven-snapshots
+                                   via settings.xml (Config File ID: maven-settings)
+                          Node   → tarball to Nexus npm repo
+                          Python → wheel to Nexus PyPI repo
+8.  Docker Build      → Build image from application Dockerfile
+9.  Trivy Scan        → Scan image for CVEs before it ever reaches a registry
+                        Fails pipeline on CRITICAL severity
+10. Image Push        → Push to Docker Hub (credential ID: docker-creds)
+                        or AWS ECR / Nexus Docker registry depending on setup
+11. Tag Update        → Update image tag in platform-engineering-systems (Repo 3)
+                        ArgoCD detects the commit and triggers deployment
 ```
 
 ---
 
-## Pipeline Matrix
+## Applications Onboarded
 
-The table below shows which CI tools are implemented per pipeline.
+| Application | Source Repo | Language | Jenkins | GitHub Actions |
+|---|---|---|:---:|:---:|
+| **java-monolith** | [java-monolith-app](https://github.com/ibtisam-iq/java-monolith-app) | Java 21 / Spring Boot | ✅ | ✅ |
+| **node-monolith** | *(planned)* | Node.js | 🕒 | 🕒 |
+| **python-monolith** | *(planned)* | Python 3.12 | 🕒 | 🕒 |
 
-| Pipeline | Jenkins | GitHub Actions | Maven | npm | pip | SonarQube | Trivy | Nexus | ECR |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Java Monolith** | ✅ | ✅ | ✅ | — | — | ✅ | ✅ | ✅ | ✅ |
-| **Node.js Monolith** | 🕒 | 🕒 | — | ✅ | — | 🕒 | 🕒 | 🕒 | 🕒 |
-| **Python Monolith** | 🕒 | 🕒 | — | — | ✅ | 🕒 | 🕒 | 🕒 | 🕒 |
+> ✅ Implemented and validated    🕒 Planned — submodule slot reserved
 
-> ✅ Implemented    🕒 Planned
-> Each pipeline is self-contained in its own subfolder and independently runnable.
+Each application is in its own subfolder under `pipelines/` and is fully self-contained. Changing one pipeline cannot affect another.
 
 ---
 
@@ -118,102 +139,93 @@ The table below shows which CI tools are implemented per pipeline.
 devsecops-pipelines/
 │
 ├── pipelines/
-│   ├── <pipeline-name>/            ← one folder per application
-│   │   ├── app/                    ← Git submodule: application source code
-│   │   ├── Jenkinsfile             ← Jenkins declarative pipeline
-│   │   ├── .github/
-│   │   │   └── workflows/
-│   │   │       └── ci.yml          ← GitHub Actions workflow
-│   │   ├── Dockerfile              ← application-specific Dockerfile
-│   │   ├── sonar-project.properties← SonarQube project config
-│   │   ├── trivy.yaml              ← Trivy scan config
-│   │   └── README.md               ← pipeline-level walkthrough
+│   ├── java-monolith/                  ← First application onboarded
+│   │   ├── app/                        ← Git submodule: github.com/ibtisam-iq/java-monolith-app
+│   │   ├── jenkins/
+│   │   │   └── Jenkinsfile             ← Jenkins declarative pipeline (fully validated)
+│   │   ├── github-actions/
+│   │   │   └── ci.yml                  ← GitHub Actions workflow (same stages, different syntax)
+│   │   └── README.md                   ← Pipeline walkthrough for this specific app
 │   │
-│   └── <more-pipelines>/           ← added as new applications are onboarded
+│   └── <next-app>/                     ← Added as each new application is onboarded
+│       ├── app/                        ← Git submodule: next application source
+│       ├── jenkins/
+│       └── github-actions/
 │
-├── shared/                         ← reusable scripts, shared pipeline libraries
-├── docs/                           ← cross-pipeline documentation
+├── docs/
+│   ├── cicd-stack-setup.md             ← How I built and configured my Jenkins/SonarQube/Nexus stack
+│   └── architecture.md                 ← Three-repo architecture overview
+│
 └── README.md
 ```
 
-> Each pipeline is fully self-contained with its own Dockerfile, scanner config, and CI definitions.
-> No pipeline shares configuration with another — changes in one cannot break others.
+---
+
+## My CI/CD Stack
+
+Before running any pipeline in this repo, I built and configured the full CI/CD infrastructure from scratch. The complete setup — provisioning, Jenkins post-setup scripts, plugin installation, credentials, SonarQube integration, Nexus Maven settings — is documented step by step in [`docs/cicd-stack-setup.md`](docs/cicd-stack-setup.md).
+
+| Service | URL | Configured As |
+|---|---|---|
+| Jenkins | `https://jenkins.ibtisam-iq.com` | CI orchestrator; 2 executors on built-in node |
+| SonarQube | `https://sonar.ibtisam-iq.com` | Static analysis server; webhook → Jenkins |
+| Nexus | `https://nexus.ibtisam-iq.com` | Maven releases, snapshots, and Docker registry |
+
+Credentials configured in Jenkins (IDs used in Jenkinsfiles):
+
+| Credential ID | Type | Purpose |
+|---|---|---|
+| `sonarqube-token` | Secret Text | SonarQube user token for `jenkins-ci` user |
+| `github-creds` | Username/Password | GitHub PAT for SCM checkout and tag updates |
+| `docker-creds` | Username/Password | Docker Hub access token for image push |
+| `nexus-creds` | Username/Password | Nexus `jenkins-ci` user for artifact push |
+| `maven-settings` | Config File (XML) | Global `settings.xml` with Nexus server credentials |
+
+Tools installed system-wide on the Jenkins OS (no Jenkins UI tool config needed):
+
+`mvn 3.9.15` · `node 22 LTS` · `docker 29.x` · `trivy 0.69.3` · `aws-cli v2` · `kubectl 1.35` · `helm 4.1.4` · `terraform 1.14.x`
+
+The only tool configured via `Manage Jenkins → Tools` is the SonarQube Scanner (`sonar-scanner`) — because it cannot be installed as a plain binary and must be managed through Jenkins.
 
 ---
 
-## Getting Started
-
-### Prerequisites
+## Clone and Run
 
 ```bash
-git --version          # Git
-docker --version       # Docker
-aws --version          # AWS CLI v2 (for ECR push)
-java --version         # Java 17+ (for Java pipelines)
-node --version         # Node.js LTS (for Node pipelines)
-python3 --version      # Python 3.10+ (for Python pipelines)
-```
-
-### Clone with Submodules
-
-```bash
+# Clone with all submodules populated
 git clone --recurse-submodules https://github.com/ibtisam-iq/devsecops-pipelines.git
 cd devsecops-pipelines
-```
 
-If you already cloned without submodules:
-
-```bash
+# If already cloned without submodules
 git submodule update --init --recursive
-```
 
-### Keeping Submodules Updated
-
-To pull the latest commit from all submodule upstream repos:
-
-```bash
+# Update all submodules to their latest upstream commit
 git submodule update --remote --merge
-git add .
-git commit -m "chore: update all submodules to latest"
-git push
+git add . && git commit -m "chore: update submodules" && git push
 ```
 
-### Run a Pipeline
+To run the Java Monolith pipeline:
+- **Jenkins:** Create a Pipeline job, point it at `pipelines/<app-name>/jenkins/Jenkinsfile`
+- **GitHub Actions:** Workflow triggers automatically on push; see `pipelines/<app-name>/github-actions/ci.yml`
 
-Each pipeline folder is self-contained. Example — Java Monolith:
-
-```bash
-cd pipelines/java-monolith
-# For Jenkins: point your Jenkins job at the Jenkinsfile here
-# For GitHub Actions: the workflow triggers automatically on push
-# See README.md inside for full setup instructions
-```
+Full per-pipeline setup instructions are in each pipeline's own `README.md`.
 
 ---
 
-## Engineering Principles
+## Key Idea
 
-- **Pipeline isolation** — each pipeline is independently runnable; no shared state between pipelines
-- **Security-first** — Trivy scans and SonarQube quality gates are non-negotiable stages
-- **Registry-agnostic** — images can be pushed to ECR, Nexus, or Docker Hub depending on the setup
-- **Submodule separation** — application source lives in its own repo; this repo owns CI operations
-- **CI → CD handoff** — the pipeline's final step updates the image tag in the CD repo, closing the GitOps loop
-- **Multi-tool** — each pipeline ships with both a Jenkinsfile and a GitHub Actions workflow
+> Application code is the input. This repo is where it gets built, tested, scanned, and packaged. Repo 3 is where it runs.
 
----
-
-## Related Repositories
-
-| Repository | Purpose |
+| Repository | Role |
 |---|---|
-| [devsecops-pipelines](https://github.com/ibtisam-iq/devsecops-pipelines) | This repo — CI pipelines |
-| [platform-engineering-systems](https://github.com/ibtisam-iq/platform-engineering-systems) | CD + Infrastructure (deployment targets) |
-| [java-monolith-app](https://github.com/ibtisam-iq/java-monolith-app) | Spring Boot application source |
+| **[java-monolith-app](https://github.com/ibtisam-iq/java-monolith-app)** (and others) | Application source — forked, modernized, and maintained by me |
+| **[devsecops-pipelines](https://github.com/ibtisam-iq/devsecops-pipelines)** | CI — builds, tests, scans, and delivers artifacts |
+| **[platform-engineering-systems](https://github.com/ibtisam-iq/platform-engineering-systems)** | CD + Infrastructure — deploys and operates the artifacts |
 
 ---
 
 ## Author
 
 **Muhammad Ibtisam Iqbal**
-DevOps Engineer · Cloud Infrastructure · Kubernetes
-[GitHub](https://github.com/ibtisam-iq) · [LinkedIn](https://linkedin.com/in/ibtisam-iq)
+DevOps Engineer · Platform Engineering · Cloud Infrastructure
+[GitHub](https://github.com/ibtisam-iq) · [LinkedIn](https://linkedin.com/in/ibtisam-iq) · [Portfolio](https://ibtisam-iq.com)
