@@ -1,8 +1,8 @@
 // ============================================================
 // DevSecOps CI Pipeline — Java Monolith (BankApp)
 // Tool: Jenkins Declarative Pipeline
-// Stack: Maven 3.9 · Java 21 · SonarQube · Trivy · Nexus · Docker Hub
-// Credentials: sonarqube-token · github-creds · docker-creds · nexus-creds
+// Stack: Maven 3.9 · Java 21 · SonarQube · Trivy · Nexus · Docker Hub · GHCR · ECR
+// Credentials: sonarqube-token · github-creds · docker-creds · nexus-creds · ghcr-creds
 // SonarQube server: sonar-server  |  Scanner: sonar-scanner
 // Maven settings:   maven-settings (Config File Provider)
 // ============================================================
@@ -30,6 +30,16 @@ pipeline {
         DOCKER_USER    = 'ibtisam-iq'
         IMAGE_NAME     = "${DOCKER_USER}/${APP_NAME}"
         // IMAGE_TAG is set dynamically in the "Versioning" stage below
+
+        // ── GitHub Container Registry (ghcr.io)
+        GHCR_USER      = 'ibtisam-iq'
+        GHCR_IMAGE     = "ghcr.io/${GHCR_USER}/${APP_NAME}"
+
+        // ── AWS ECR
+        // AWS_REGION     = 'us-east-1'
+        // AWS_ACCOUNT_ID = '123456789012'                          // replace with your account ID
+        // ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        // ECR_IMAGE      = "${ECR_REGISTRY}/${APP_NAME}"
 
         // ── Registry URLs
         NEXUS_URL      = 'https://nexus.ibtisam-iq.com'
@@ -81,7 +91,49 @@ pipeline {
         }
 
         // ────────────────────────────────────────────────
-        // STAGE 2 — Versioning
+        // STAGE 2 — Trivy Filesystem Scan
+        // Scans the entire checked-out source tree for:
+        //   - Hardcoded secrets (passwords, tokens, keys)
+        //   - Known CVEs in dependency files
+        //     (pom.xml, package.json, requirements.txt)
+        //   - Misconfigurations in Dockerfile, compose.yml
+        //
+        // This runs BEFORE build — fail-fast on secrets or
+        // critical dependency CVEs before wasting build time.
+        //
+        // --scanners secret,vuln,config covers all three.
+        // EXIT-CODE 1 on CRITICAL findings fails the build.
+        // Full report archived as trivy-fs-report.json.
+        // ────────────────────────────────────────────────
+        stage('Trivy Filesystem Scan') {
+            steps {
+                dir(APP_DIR) {
+                    echo '🔎 Running Trivy filesystem scan on source tree...'
+                    sh """
+                        trivy fs \
+                            --scanners secret,vuln,config \
+                            --exit-code 1 \
+                            --severity CRITICAL \
+                            --no-progress \
+                            --format json \
+                            --output trivy-fs-report.json \
+                            . || true
+
+                        trivy fs \
+                            --scanners secret,vuln,config \
+                            --exit-code 0 \
+                            --severity HIGH,MEDIUM \
+                            --no-progress \
+                            --format table \
+                            .
+                    """
+                    archiveArtifacts artifacts: 'trivy-fs-report.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 3 — Versioning
         // Build a unique, traceable image tag:
         //   <pom-version>-<short-git-sha>-<build-number>
         // e.g.  0.0.1-SNAPSHOT-ab3f12c-42
@@ -99,7 +151,7 @@ pipeline {
         }
 
         // ────────────────────────────────────────────────
-        // STAGE 3 — Build & Test
+        // STAGE 4 — Build & Test
         // withMaven injects the managed settings.xml (maven-settings)
         // so Nexus credentials never appear in source code.
         // JaCoCo runs automatically during the test phase
@@ -131,10 +183,9 @@ pipeline {
         }
 
         // ────────────────────────────────────────────────
-        // STAGE 4 — SonarQube Analysis
+        // STAGE 5 — SonarQube Analysis
         // withSonarQubeEnv injects SONAR_HOST_URL and the
         // sonarqube-token automatically — no hardcoding.
-        // sonar-project.properties lives in sonar/ folder.
         // ────────────────────────────────────────────────
         stage('SonarQube Analysis') {
             steps {
@@ -157,7 +208,7 @@ pipeline {
         }
 
         // ────────────────────────────────────────────────
-        // STAGE 5 — Quality Gate
+        // STAGE 6 — Quality Gate
         // Blocks the pipeline until SonarQube webhook fires
         // back to Jenkins with pass/fail result.
         // abortPipeline: true → fails the build on gate failure.
@@ -172,7 +223,7 @@ pipeline {
         }
 
         // ────────────────────────────────────────────────
-        // STAGE 6 — Publish JAR to Nexus
+        // STAGE 7 — Publish JAR to Nexus
         // Pushes the built SNAPSHOT JAR to:
         //   https://nexus.ibtisam-iq.com/repository/maven-snapshots/
         // The server IDs (maven-releases / maven-snapshots) in
@@ -190,12 +241,15 @@ pipeline {
         }
 
         // ────────────────────────────────────────────────
-        // STAGE 7 — Docker Build
+        // STAGE 8 — Docker Build
         // Builds the multi-stage image defined in the app's
         // own Dockerfile (Stage1: maven:3.9-temurin-21-alpine,
         // Stage2: eclipse-temurin:21-jre-alpine).
-        // We pass SERVER_PORT as a build-arg to match the ARG
-        // declared in the Dockerfile.
+        // Tags the image for ALL three registries in one build:
+        //   - Docker Hub : ibtisam-iq/bankapp:<tag>
+        //   - GHCR       : ghcr.io/ibtisam-iq/bankapp:<tag>
+        //   - ECR        : <account>.dkr.ecr.<region>.amazonaws.com/bankapp:<tag>
+        // Building once and tagging avoids rebuilding per registry.
         // ────────────────────────────────────────────────
         stage('Docker Build') {
             steps {
@@ -209,19 +263,24 @@ pipeline {
                             --label "org.opencontainers.image.created=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                             -t ${IMAGE_NAME}:${IMAGE_TAG} \
                             -t ${IMAGE_NAME}:latest \
+                            -t ${GHCR_IMAGE}:${IMAGE_TAG} \
+                            -t ${GHCR_IMAGE}:latest \
                             .
+
+                        # Uncomment once ECR variables above are set:
+                        # docker tag ${IMAGE_NAME}:${IMAGE_TAG} \${ECR_IMAGE}:${IMAGE_TAG}
+                        # docker tag ${IMAGE_NAME}:latest       \${ECR_IMAGE}:latest
                     """
                 }
             }
         }
 
         // ────────────────────────────────────────────────
-        // STAGE 8 — Trivy Image Scan
+        // STAGE 9 — Trivy Image Scan
         // Scans the freshly built image for CVEs BEFORE
         // pushing to any registry — fail-fast principle.
         // EXIT-CODE 1 on CRITICAL findings fails the build.
-        // Results are archived as a JSON report artifact.
-        // Trivy is pre-installed on Jenkins OS (install-pipeline-tools).
+        // Results archived as trivy-image-report.json.
         // ────────────────────────────────────────────────
         stage('Trivy Image Scan') {
             steps {
@@ -232,7 +291,7 @@ pipeline {
                         --severity CRITICAL \
                         --no-progress \
                         --format json \
-                        --output trivy-report.json \
+                        --output trivy-image-report.json \
                         ${IMAGE_NAME}:${IMAGE_TAG} || true
 
                     trivy image \
@@ -242,15 +301,14 @@ pipeline {
                         --format table \
                         ${IMAGE_NAME}:${IMAGE_TAG}
                 """
-                // Archive the JSON report for review
-                archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true
+                archiveArtifacts artifacts: 'trivy-image-report.json', allowEmptyArchive: true
             }
         }
 
         // ────────────────────────────────────────────────
-        // STAGE 9 — Push to Docker Hub
-        // Uses docker-creds (Username with Password).
-        // Pushes both the versioned tag and :latest.
+        // STAGE 10 — Push to Docker Hub
+        // Credential ID: docker-creds (Username with Password)
+        // Pushes both versioned tag and :latest.
         // ────────────────────────────────────────────────
         stage('Push to Docker Hub') {
             steps {
@@ -271,9 +329,41 @@ pipeline {
         }
 
         // ────────────────────────────────────────────────
-        // STAGE 10 — Push Docker Image to Nexus Registry
-        // Tags and pushes to Nexus Docker hosted registry.
-        // Uses nexus-creds (Username with Password).
+        // STAGE 11 — Push to GitHub Container Registry (GHCR)
+        // ghcr.io/ibtisam-iq/bankapp:<tag>
+        //
+        // Credential setup in Jenkins:
+        //   Kind:     Username with password
+        //   Username: ibtisam-iq
+        //   Password: GitHub PAT with scopes: write:packages, read:packages
+        //   ID:       ghcr-creds
+        //
+        // NOTE: You can reuse github-creds here if your existing
+        // PAT already has write:packages scope. If so, replace
+        // 'ghcr-creds' with 'github-creds' below.
+        // ────────────────────────────────────────────────
+        stage('Push to GHCR') {
+            steps {
+                echo "🐙 Pushing image to GitHub Container Registry: ${GHCR_IMAGE}"
+                withCredentials([usernamePassword(
+                    credentialsId: 'ghcr-creds',
+                    usernameVariable: 'GHCR_USERNAME',
+                    passwordVariable: 'GHCR_TOKEN'
+                )]) {
+                    sh """
+                        echo "\${GHCR_TOKEN}" | docker login ghcr.io -u "\${GHCR_USERNAME}" --password-stdin
+                        docker push ${GHCR_IMAGE}:${IMAGE_TAG}
+                        docker push ${GHCR_IMAGE}:latest
+                        docker logout ghcr.io
+                    """
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 12 — Push to Nexus Docker Registry
+        // nexus.ibtisam-iq.com/bankapp:<tag>
+        // Credential ID: nexus-creds (Username with Password)
         // ────────────────────────────────────────────────
         stage('Push to Nexus Registry') {
             steps {
@@ -286,7 +376,7 @@ pipeline {
                     sh """
                         echo "\${NEXUS_PASS}" | docker login ${NEXUS_DOCKER} -u "\${NEXUS_USER}" --password-stdin
                         docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG}
-                        docker tag ${IMAGE_NAME}:latest      ${NEXUS_DOCKER}/${APP_NAME}:latest
+                        docker tag ${IMAGE_NAME}:latest       ${NEXUS_DOCKER}/${APP_NAME}:latest
                         docker push ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG}
                         docker push ${NEXUS_DOCKER}/${APP_NAME}:latest
                         docker logout ${NEXUS_DOCKER}
@@ -296,10 +386,55 @@ pipeline {
         }
 
         // ────────────────────────────────────────────────
-        // STAGE 11 — Update Image Tag in CD Repo
-        // CI → CD Handoff: updates the image tag in
-        // platform-engineering-systems repo so ArgoCD
-        // or the CD pipeline detects the change and deploys.
+        // STAGE 13 — Push to AWS ECR  [COMMENTED OUT]
+        // Uncomment and configure once AWS credentials and
+        // ECR repository are provisioned.
+        //
+        // Pre-requisites:
+        //   1. Create ECR repo:
+        //        aws ecr create-repository --repository-name bankapp --region us-east-1
+        //
+        //   2. Add AWS credentials to Jenkins:
+        //        Kind:     AWS Credentials (requires CloudBees AWS Credentials plugin)
+        //        ID:       aws-creds
+        //        Access Key ID + Secret Access Key for an IAM user/role with
+        //        AmazonEC2ContainerRegistryPowerUser policy attached.
+        //
+        //   3. Set the three ECR variables at the top of this file:
+        //        AWS_REGION, AWS_ACCOUNT_ID, ECR_REGISTRY, ECR_IMAGE
+        //
+        //   4. Uncomment the docker tag lines in the Docker Build stage above.
+        //
+        //   5. Uncomment this entire stage.
+        // ────────────────────────────────────────────────
+        // stage('Push to AWS ECR') {
+        //     steps {
+        //         echo "☁️  Pushing image to AWS ECR: ${ECR_IMAGE}"
+        //         withCredentials([[
+        //             $class:            'AmazonWebServicesCredentialsBinding',
+        //             credentialsId:     'aws-creds',
+        //             accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+        //             secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+        //         ]]) {
+        //             sh """
+        //                 # Authenticate Docker to ECR — token valid for 12 hours
+        //                 aws ecr get-login-password --region ${AWS_REGION} \
+        //                     | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+        //
+        //                 docker push ${ECR_IMAGE}:${IMAGE_TAG}
+        //                 docker push ${ECR_IMAGE}:latest
+        //
+        //                 docker logout ${ECR_REGISTRY}
+        //             """
+        //         }
+        //     }
+        // }
+
+        // ────────────────────────────────────────────────
+        // STAGE 14 — Update Image Tag in CD Repo
+        // CI → CD Handoff: commits the new image tag into
+        // platform-engineering-systems so ArgoCD detects
+        // the change and triggers deployment.
         // ────────────────────────────────────────────────
         stage('Update CD Repo') {
             steps {
@@ -313,15 +448,13 @@ pipeline {
                         git config --global user.email "jenkins@ibtisam-iq.com"
                         git config --global user.name  "Jenkins CI"
 
-                        # Clone CD repo
                         rm -rf cd-repo
                         git clone https://\${GIT_USER}:\${GIT_TOKEN}@github.com/ibtisam-iq/platform-engineering-systems.git cd-repo
 
                         cd cd-repo
 
-                        # Update image tag — sed targets the bankapp image line
-                        # Adjust path below once K8s/Helm manifests are created
-                        # sed -i "s|image: ibtisam-iq/bankapp:.*|image: ibtisam-iq/bankapp:${IMAGE_TAG}|g" \\
+                        # Once K8s/Helm manifests exist, replace the echo below with:
+                        # sed -i "s|image: ibtisam-iq/bankapp:.*|image: ibtisam-iq/bankapp:${IMAGE_TAG}|g" \
                         #     deployments/java-monolith/deployment.yaml
 
                         echo "IMAGE_TAG=${IMAGE_TAG}" > java-monolith-image.env
@@ -343,31 +476,34 @@ pipeline {
         always {
             echo '🧹 Cleaning up local Docker images...'
             sh """
-                docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true
-                docker rmi ${IMAGE_NAME}:latest       || true
+                docker rmi ${IMAGE_NAME}:${IMAGE_TAG}              || true
+                docker rmi ${IMAGE_NAME}:latest                    || true
+                docker rmi ${GHCR_IMAGE}:${IMAGE_TAG}              || true
+                docker rmi ${GHCR_IMAGE}:latest                    || true
                 docker rmi ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG} || true
                 docker rmi ${NEXUS_DOCKER}/${APP_NAME}:latest       || true
+                # docker rmi ${ECR_IMAGE}:${IMAGE_TAG}             || true
+                # docker rmi ${ECR_IMAGE}:latest                   || true
             """
-            // Remove the temporary CD repo clone
             sh 'rm -rf cd-repo'
-            // Clean Jenkins workspace
             cleanWs()
         }
         success {
             echo """
-            ╔══════════════════════════════════════════════╗
-            ║  ✅  PIPELINE SUCCEEDED                      ║
-            ║  Image : ${IMAGE_NAME}:${IMAGE_TAG}
-            ║  Nexus : ${NEXUS_URL}                        ║
-            ╚══════════════════════════════════════════════╝
+            ╔══════════════════════════════════════════════════════════╗
+            ║  ✅  PIPELINE SUCCEEDED                                  ║
+            ║  Image    : ${IMAGE_NAME}:${IMAGE_TAG}
+            ║  GHCR     : ${GHCR_IMAGE}:${IMAGE_TAG}
+            ║  Nexus    : ${NEXUS_URL}                                 ║
+            ╚══════════════════════════════════════════════════════════╝
             """
         }
         failure {
             echo """
-            ╔══════════════════════════════════════════════╗
-            ║  ❌  PIPELINE FAILED                         ║
-            ║  Check console output for details            ║
-            ╚══════════════════════════════════════════════╝
+            ╔══════════════════════════════════════════════════════════╗
+            ║  ❌  PIPELINE FAILED                                     ║
+            ║  Check console output for details                        ║
+            ╚══════════════════════════════════════════════════════════╝
             """
         }
         unstable {
