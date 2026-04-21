@@ -42,9 +42,9 @@ pipeline {
         GHCR_USER      = 'ibtisam-iq'
         GHCR_IMAGE     = "ghcr.io/${GHCR_USER}/${APP_NAME}"
 
-        // ── AWS ECR
+        // ── AWS ECR  [uncomment all four lines once ECR repo is provisioned]
         // AWS_REGION     = 'us-east-1'
-        // AWS_ACCOUNT_ID = '123456789012'                          
+        // AWS_ACCOUNT_ID = '123456789012'
         // ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         // ECR_IMAGE      = "${ECR_REGISTRY}/${APP_NAME}"
 
@@ -111,21 +111,21 @@ pipeline {
                 dir(APP_DIR) {
                     echo '🔎 Running Trivy filesystem scan on source tree...'
                     sh """
-                        trivy fs \
-                            --scanners secret,vuln,config \
-                            --exit-code 1 \
-                            --severity CRITICAL \
-                            --no-progress \
-                            --format json \
-                            --output trivy-fs-report.json \
+                        trivy fs \\
+                            --scanners secret,vuln,config \\
+                            --exit-code 1 \\
+                            --severity CRITICAL \\
+                            --no-progress \\
+                            --format json \\
+                            --output trivy-fs-report.json \\
                             . || true
 
-                        trivy fs \
-                            --scanners secret,vuln,config \
-                            --exit-code 0 \
-                            --severity HIGH,MEDIUM \
-                            --no-progress \
-                            --format table \
+                        trivy fs \\
+                            --scanners secret,vuln,config \\
+                            --exit-code 0 \\
+                            --severity HIGH,MEDIUM \\
+                            --no-progress \\
+                            --format table \\
                             .
                     """
                     archiveArtifacts artifacts: 'trivy-fs-report.json', allowEmptyArchive: true
@@ -157,6 +157,11 @@ pipeline {
         // so Nexus credentials never appear in source code.
         // JaCoCo runs automatically during the test phase
         // because it is bound to prepare-agent + report goals in pom.xml.
+        //
+        // NOTE: No post block here — junit and recordCoverage are
+        // publishers that must live in the top-level post { always }
+        // block. Stage-level post only supports plain steps, not
+        // Jenkins publisher DSLs.
         // ────────────────────────────────────────────────
         stage('Build & Test') {
             steps {
@@ -165,18 +170,6 @@ pipeline {
                     withMaven(globalMavenSettingsConfig: 'maven-settings') {
                         sh 'mvn clean verify -B --no-transfer-progress'
                     }
-                }
-            }
-            post {
-                always {
-                    junit testResults: "${APP_DIR}/target/surefire-reports/*.xml",
-                          allowEmptyResults: true
-                    jacoco(
-                        execPattern:    "${APP_DIR}/target/jacoco.exec",
-                        classPattern:   "${APP_DIR}/target/classes",
-                        sourcePattern:  "${APP_DIR}/src/main/java",
-                        exclusionPattern: '**/*Test*'
-                    )
                 }
             }
         }
@@ -193,11 +186,11 @@ pipeline {
                     withSonarQubeEnv('sonar-server') {
                         withMaven(globalMavenSettingsConfig: 'maven-settings') {
                             sh """
-                                mvn sonar:sonar \
-                                    -Dsonar.projectKey=IbtisamIQbankapp \
-                                    -Dsonar.projectName=IbtisamIQbankapp \
-                                    -Dsonar.java.binaries=target/classes \
-                                    -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                                mvn sonar:sonar \\
+                                    -Dsonar.projectKey=IbtisamIQbankapp \\
+                                    -Dsonar.projectName=IbtisamIQbankapp \\
+                                    -Dsonar.java.binaries=target/classes \\
+                                    -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \\
                                     -B --no-transfer-progress
                             """
                         }
@@ -245,7 +238,7 @@ pipeline {
         // own Dockerfile (Stage1: maven:3.9-temurin-21-alpine,
         // Stage2: eclipse-temurin:21-jre-alpine).
         // Tags the image for ALL three registries in one build:
-        //   - Docker Hub : ibtisam-iq/bankapp:<tag>
+        //   - Docker Hub : mibtisam/bankapp:<tag>
         //   - GHCR       : ghcr.io/ibtisam-iq/bankapp:<tag>
         //   - ECR        : <account>.dkr.ecr.<region>.amazonaws.com/bankapp:<tag>
         // Building once and tagging avoids rebuilding per registry.
@@ -255,15 +248,15 @@ pipeline {
                 dir(APP_DIR) {
                     echo "🐳 Building Docker image: ${IMAGE_NAME}:${IMAGE_TAG}"
                     sh """
-                        docker build \
-                            --build-arg SERVER_PORT=8000 \
-                            --label "org.opencontainers.image.version=${IMAGE_TAG}" \
-                            --label "org.opencontainers.image.revision=${GIT_COMMIT}" \
-                            --label "org.opencontainers.image.created=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-                            -t ${IMAGE_NAME}:${IMAGE_TAG} \
-                            -t ${IMAGE_NAME}:latest \
-                            -t ${GHCR_IMAGE}:${IMAGE_TAG} \
-                            -t ${GHCR_IMAGE}:latest \
+                        docker build \\
+                            --build-arg SERVER_PORT=8000 \\
+                            --label "org.opencontainers.image.version=${IMAGE_TAG}" \\
+                            --label "org.opencontainers.image.revision=${GIT_COMMIT}" \\
+                            --label "org.opencontainers.image.created=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" \\
+                            -t ${IMAGE_NAME}:${IMAGE_TAG} \\
+                            -t ${IMAGE_NAME}:latest \\
+                            -t ${GHCR_IMAGE}:${IMAGE_TAG} \\
+                            -t ${GHCR_IMAGE}:latest \\
                             .
 
                         # Uncomment once ECR variables above are set:
@@ -285,19 +278,19 @@ pipeline {
             steps {
                 echo "🛡️  Scanning image with Trivy: ${IMAGE_NAME}:${IMAGE_TAG}"
                 sh """
-                    trivy image \
-                        --exit-code 1 \
-                        --severity CRITICAL \
-                        --no-progress \
-                        --format json \
-                        --output trivy-image-report.json \
+                    trivy image \\
+                        --exit-code 1 \\
+                        --severity CRITICAL \\
+                        --no-progress \\
+                        --format json \\
+                        --output trivy-image-report.json \\
                         ${IMAGE_NAME}:${IMAGE_TAG} || true
 
-                    trivy image \
-                        --exit-code 0 \
-                        --severity HIGH,MEDIUM,LOW \
-                        --no-progress \
-                        --format table \
+                    trivy image \\
+                        --exit-code 0 \\
+                        --severity HIGH,MEDIUM,LOW \\
+                        --no-progress \\
+                        --format table \\
                         ${IMAGE_NAME}:${IMAGE_TAG}
                 """
                 archiveArtifacts artifacts: 'trivy-image-report.json', allowEmptyArchive: true
@@ -399,7 +392,7 @@ pipeline {
         //        Access Key ID + Secret Access Key for an IAM user/role with
         //        AmazonEC2ContainerRegistryPowerUser policy attached.
         //
-        //   3. Set the three ECR variables at the top of this file:
+        //   3. Set the four ECR variables in environment {} above:
         //        AWS_REGION, AWS_ACCOUNT_ID, ECR_REGISTRY, ECR_IMAGE
         //
         //   4. Uncomment the docker tag lines in the Docker Build stage above.
@@ -452,7 +445,7 @@ pipeline {
                         cd cd-repo
 
                         # Once K8s/Helm manifests exist, replace the echo below with:
-                        # sed -i "s|image: ibtisam-iq/bankapp:.*|image: ibtisam-iq/bankapp:${IMAGE_TAG}|g" \
+                        # sed -i "s|image: ibtisam-iq/bankapp:.*|image: ibtisam-iq/bankapp:${IMAGE_TAG}|g" \\
                         #     deployments/java-monolith/deployment.yaml
 
                         echo "IMAGE_TAG=${IMAGE_TAG}" > java-monolith-image.env
@@ -468,10 +461,32 @@ pipeline {
     }
 
     // ────────────────────────────────────────────────────
-    // POST — Cleanup & Notifications
+    // POST — Publishers, Cleanup & Notifications
+    //
+    // junit and recordCoverage are Jenkins publisher steps.
+    // Publishers MUST live here in the top-level post block —
+    // they are NOT supported inside a stage-level post block.
     // ────────────────────────────────────────────────────
     post {
         always {
+            // ── Test results
+            junit testResults: "${APP_DIR}/target/surefire-reports/*.xml",
+                  allowEmptyResults: true
+
+            // ── Code coverage (Coverage Plugin — recordCoverage DSL)
+            // Requires: "Coverage" plugin (not the old JaCoCo plugin).
+            // jacoco.exec is generated by JaCoCo prepare-agent bound in pom.xml.
+            // Full path Jenkins resolves: $WORKSPACE/pipelines/java-monolith/app/target/jacoco.exec
+            recordCoverage(
+                tools: [[
+                    parser: 'JACOCO',
+                    pattern: "${APP_DIR}/target/jacoco.exec"
+                ]],
+                sourceCodeRetention: 'EVERY_BUILD'
+            )
+
+            // ── Docker image cleanup
+            // ECR lines stay commented until ECR_IMAGE is defined in environment {}
             echo '🧹 Cleaning up local Docker images...'
             sh """
                 docker rmi ${IMAGE_NAME}:${IMAGE_TAG}               || true
@@ -480,8 +495,8 @@ pipeline {
                 docker rmi ${GHCR_IMAGE}:latest                     || true
                 docker rmi ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG}  || true
                 docker rmi ${NEXUS_DOCKER}/${APP_NAME}:latest        || true
-                # docker rmi ${ECR_IMAGE}:${IMAGE_TAG}              || true
-                # docker rmi ${ECR_IMAGE}:latest                    || true
+                # docker rmi \${ECR_IMAGE}:${IMAGE_TAG}             || true  (uncomment with ECR vars)
+                # docker rmi \${ECR_IMAGE}:latest                   || true  (uncomment with ECR vars)
             """
             sh 'rm -rf cd-repo'
             cleanWs()
