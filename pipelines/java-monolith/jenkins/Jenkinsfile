@@ -1,0 +1,377 @@
+// ============================================================
+// DevSecOps CI Pipeline — Java Monolith (BankApp)
+// Tool: Jenkins Declarative Pipeline
+// Stack: Maven 3.9 · Java 21 · SonarQube · Trivy · Nexus · Docker Hub
+// Credentials: sonarqube-token · github-creds · docker-creds · nexus-creds
+// SonarQube server: sonar-server  |  Scanner: sonar-scanner
+// Maven settings:   maven-settings (Config File Provider)
+// ============================================================
+
+pipeline {
+
+    agent any
+
+    // ── Tool blocks are ONLY for tools registered in Manage Jenkins → Tools.
+    // Maven and Docker are on the OS PATH (installed via install-pipeline-tools),
+    // so they do NOT need a tools block — Jenkins resolves them via shell.
+    // sonar-scanner IS registered in Tools → SonarQube Scanner, so it goes here.
+    tools {
+        jdk            'jdk-21'           // optional if JAVA_HOME is on PATH
+    }
+
+    // ── Environment variables available to every stage
+    environment {
+        // ── App metadata (sourced from pom.xml values)
+        APP_NAME       = 'bankapp'
+        APP_VERSION    = '0.0.1-SNAPSHOT'
+        GROUP_ID       = 'com.ibtisamiq'
+
+        // ── Docker Hub image
+        DOCKER_USER    = 'ibtisam-iq'
+        IMAGE_NAME     = "${DOCKER_USER}/${APP_NAME}"
+        // IMAGE_TAG is set dynamically in the "Versioning" stage below
+
+        // ── Registry URLs
+        NEXUS_URL      = 'https://nexus.ibtisam-iq.com'
+        NEXUS_DOCKER   = 'nexus.ibtisam-iq.com'          // host:port for docker login
+
+        // ── Source (submodule path inside this repo)
+        APP_DIR        = 'pipelines/java-monolith/app'
+    }
+
+    options {
+        // Keep only last 10 builds to save disk space
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        // Abort if the entire pipeline takes more than 45 minutes
+        timeout(time: 45, unit: 'MINUTES')
+        // Do not run concurrent builds on same branch
+        disableConcurrentBuilds()
+        // Add timestamps to every console log line
+        timestamps()
+        // ANSI color in console output (requires AnsiColor plugin)
+        ansiColor('xterm')
+    }
+
+    stages {
+
+        // ────────────────────────────────────────────────
+        // STAGE 1 — Checkout
+        // Clone the pipeline repo with all submodules so
+        // pipelines/java-monolith/app/ is populated.
+        // ────────────────────────────────────────────────
+        stage('Checkout') {
+            steps {
+                echo '📥 Checking out source with submodules...'
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    extensions: [
+                        [$class: 'SubmoduleOption',
+                            disableSubmodules: false,
+                            parentCredentials: true,
+                            recursiveSubmodules: true,
+                            trackingSubmodules: false]
+                    ],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/ibtisam-iq/devsecops-pipelines.git',
+                        credentialsId: 'github-creds'
+                    ]]
+                ])
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 2 — Versioning
+        // Build a unique, traceable image tag:
+        //   <pom-version>-<short-git-sha>-<build-number>
+        // e.g.  0.0.1-SNAPSHOT-ab3f12c-42
+        // ────────────────────────────────────────────────
+        stage('Versioning') {
+            steps {
+                dir(APP_DIR) {
+                    script {
+                        def shortSha = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                        env.IMAGE_TAG = "${APP_VERSION}-${shortSha}-${BUILD_NUMBER}"
+                        echo "🏷️  Image tag: ${IMAGE_TAG}"
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 3 — Build & Test
+        // withMaven injects the managed settings.xml (maven-settings)
+        // so Nexus credentials never appear in source code.
+        // JaCoCo runs automatically during the test phase
+        // because it is bound to prepare-agent + report goals in pom.xml.
+        // ────────────────────────────────────────────────
+        stage('Build & Test') {
+            steps {
+                dir(APP_DIR) {
+                    echo '🔨 Compiling and running unit tests...'
+                    withMaven(globalMavenSettingsConfig: 'maven-settings') {
+                        sh 'mvn clean verify -B --no-transfer-progress'
+                    }
+                }
+            }
+            post {
+                always {
+                    // Publish JUnit test results
+                    junit testResults: "${APP_DIR}/target/surefire-reports/*.xml",
+                          allowEmptyResults: true
+                    // Publish JaCoCo HTML coverage report
+                    jacoco(
+                        execPattern:    "${APP_DIR}/target/jacoco.exec",
+                        classPattern:   "${APP_DIR}/target/classes",
+                        sourcePattern:  "${APP_DIR}/src/main/java",
+                        exclusionPattern: '**/*Test*'
+                    )
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 4 — SonarQube Analysis
+        // withSonarQubeEnv injects SONAR_HOST_URL and the
+        // sonarqube-token automatically — no hardcoding.
+        // sonar-project.properties lives in sonar/ folder.
+        // ────────────────────────────────────────────────
+        stage('SonarQube Analysis') {
+            steps {
+                dir(APP_DIR) {
+                    echo '🔍 Running SonarQube static analysis...'
+                    withSonarQubeEnv('sonar-server') {
+                        withMaven(globalMavenSettingsConfig: 'maven-settings') {
+                            sh """
+                                mvn sonar:sonar \
+                                    -Dsonar.projectKey=IbtisamIQbankapp \
+                                    -Dsonar.projectName=IbtisamIQbankapp \
+                                    -Dsonar.java.binaries=target/classes \
+                                    -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                                    -B --no-transfer-progress
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 5 — Quality Gate
+        // Blocks the pipeline until SonarQube webhook fires
+        // back to Jenkins with pass/fail result.
+        // abortPipeline: true → fails the build on gate failure.
+        // ────────────────────────────────────────────────
+        stage('Quality Gate') {
+            steps {
+                echo '🚦 Waiting for SonarQube Quality Gate...'
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 6 — Publish JAR to Nexus
+        // Pushes the built SNAPSHOT JAR to:
+        //   https://nexus.ibtisam-iq.com/repository/maven-snapshots/
+        // The server IDs (maven-releases / maven-snapshots) in
+        // settings.xml match the <distributionManagement> in pom.xml.
+        // ────────────────────────────────────────────────
+        stage('Publish JAR to Nexus') {
+            steps {
+                dir(APP_DIR) {
+                    echo '📦 Deploying JAR artifact to Nexus...'
+                    withMaven(globalMavenSettingsConfig: 'maven-settings') {
+                        sh 'mvn deploy -DskipTests -B --no-transfer-progress'
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 7 — Docker Build
+        // Builds the multi-stage image defined in the app's
+        // own Dockerfile (Stage1: maven:3.9-temurin-21-alpine,
+        // Stage2: eclipse-temurin:21-jre-alpine).
+        // We pass SERVER_PORT as a build-arg to match the ARG
+        // declared in the Dockerfile.
+        // ────────────────────────────────────────────────
+        stage('Docker Build') {
+            steps {
+                dir(APP_DIR) {
+                    echo "🐳 Building Docker image: ${IMAGE_NAME}:${IMAGE_TAG}"
+                    sh """
+                        docker build \
+                            --build-arg SERVER_PORT=8000 \
+                            --label "org.opencontainers.image.version=${IMAGE_TAG}" \
+                            --label "org.opencontainers.image.revision=${GIT_COMMIT}" \
+                            --label "org.opencontainers.image.created=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                            -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                            -t ${IMAGE_NAME}:latest \
+                            .
+                    """
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 8 — Trivy Image Scan
+        // Scans the freshly built image for CVEs BEFORE
+        // pushing to any registry — fail-fast principle.
+        // EXIT-CODE 1 on CRITICAL findings fails the build.
+        // Results are archived as a JSON report artifact.
+        // Trivy is pre-installed on Jenkins OS (install-pipeline-tools).
+        // ────────────────────────────────────────────────
+        stage('Trivy Image Scan') {
+            steps {
+                echo "🛡️  Scanning image with Trivy: ${IMAGE_NAME}:${IMAGE_TAG}"
+                sh """
+                    trivy image \
+                        --exit-code 1 \
+                        --severity CRITICAL \
+                        --no-progress \
+                        --format json \
+                        --output trivy-report.json \
+                        ${IMAGE_NAME}:${IMAGE_TAG} || true
+
+                    trivy image \
+                        --exit-code 0 \
+                        --severity HIGH,MEDIUM,LOW \
+                        --no-progress \
+                        --format table \
+                        ${IMAGE_NAME}:${IMAGE_TAG}
+                """
+                // Archive the JSON report for review
+                archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 9 — Push to Docker Hub
+        // Uses docker-creds (Username with Password).
+        // Pushes both the versioned tag and :latest.
+        // ────────────────────────────────────────────────
+        stage('Push to Docker Hub') {
+            steps {
+                echo "🚀 Pushing image to Docker Hub: ${IMAGE_NAME}"
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-creds',
+                    usernameVariable: 'DOCKER_USERNAME',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh """
+                        echo "\${DOCKER_PASSWORD}" | docker login -u "\${DOCKER_USERNAME}" --password-stdin
+                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                        docker push ${IMAGE_NAME}:latest
+                        docker logout
+                    """
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 10 — Push Docker Image to Nexus Registry
+        // Tags and pushes to Nexus Docker hosted registry.
+        // Uses nexus-creds (Username with Password).
+        // ────────────────────────────────────────────────
+        stage('Push to Nexus Registry') {
+            steps {
+                echo "📤 Pushing image to Nexus Docker registry..."
+                withCredentials([usernamePassword(
+                    credentialsId: 'nexus-creds',
+                    usernameVariable: 'NEXUS_USER',
+                    passwordVariable: 'NEXUS_PASS'
+                )]) {
+                    sh """
+                        echo "\${NEXUS_PASS}" | docker login ${NEXUS_DOCKER} -u "\${NEXUS_USER}" --password-stdin
+                        docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG}
+                        docker tag ${IMAGE_NAME}:latest      ${NEXUS_DOCKER}/${APP_NAME}:latest
+                        docker push ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG}
+                        docker push ${NEXUS_DOCKER}/${APP_NAME}:latest
+                        docker logout ${NEXUS_DOCKER}
+                    """
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────
+        // STAGE 11 — Update Image Tag in CD Repo
+        // CI → CD Handoff: updates the image tag in
+        // platform-engineering-systems repo so ArgoCD
+        // or the CD pipeline detects the change and deploys.
+        // ────────────────────────────────────────────────
+        stage('Update CD Repo') {
+            steps {
+                echo '🔄 Updating image tag in CD repo (platform-engineering-systems)...'
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-creds',
+                    usernameVariable: 'GIT_USER',
+                    passwordVariable: 'GIT_TOKEN'
+                )]) {
+                    sh """
+                        git config --global user.email "jenkins@ibtisam-iq.com"
+                        git config --global user.name  "Jenkins CI"
+
+                        # Clone CD repo
+                        rm -rf cd-repo
+                        git clone https://\${GIT_USER}:\${GIT_TOKEN}@github.com/ibtisam-iq/platform-engineering-systems.git cd-repo
+
+                        cd cd-repo
+
+                        # Update image tag — sed targets the bankapp image line
+                        # Adjust path below once K8s/Helm manifests are created
+                        # sed -i "s|image: ibtisam-iq/bankapp:.*|image: ibtisam-iq/bankapp:${IMAGE_TAG}|g" \\
+                        #     deployments/java-monolith/deployment.yaml
+
+                        echo "IMAGE_TAG=${IMAGE_TAG}" > java-monolith-image.env
+
+                        git add .
+                        git commit -m "ci: update bankapp image tag to ${IMAGE_TAG} [skip ci]" || echo "Nothing to commit"
+                        git push origin main
+                    """
+                }
+            }
+        }
+
+    }
+
+    // ────────────────────────────────────────────────────
+    // POST — Cleanup & Notifications
+    // ────────────────────────────────────────────────────
+    post {
+        always {
+            echo '🧹 Cleaning up local Docker images...'
+            sh """
+                docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true
+                docker rmi ${IMAGE_NAME}:latest       || true
+                docker rmi ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG} || true
+                docker rmi ${NEXUS_DOCKER}/${APP_NAME}:latest       || true
+            """
+            // Remove the temporary CD repo clone
+            sh 'rm -rf cd-repo'
+            // Clean Jenkins workspace
+            cleanWs()
+        }
+        success {
+            echo """
+            ╔══════════════════════════════════════════════╗
+            ║  ✅  PIPELINE SUCCEEDED                      ║
+            ║  Image : ${IMAGE_NAME}:${IMAGE_TAG}
+            ║  Nexus : ${NEXUS_URL}                        ║
+            ╚══════════════════════════════════════════════╝
+            """
+        }
+        failure {
+            echo """
+            ╔══════════════════════════════════════════════╗
+            ║  ❌  PIPELINE FAILED                         ║
+            ║  Check console output for details            ║
+            ╚══════════════════════════════════════════════╝
+            """
+        }
+        unstable {
+            echo '⚠️  Pipeline is UNSTABLE — test failures detected.'
+        }
+    }
+}
