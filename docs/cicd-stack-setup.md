@@ -250,7 +250,11 @@ Manage Jenkins → Managed files → Add a new Config → Global Maven settings.
 Inside the file, I added the Nexus server credentials:
 
 ```xml
-<settings>
+<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0
+          https://maven.apache.org/xsd/settings-1.2.0.xsd">
   <servers>
     <server>
       <id>maven-releases</id>
@@ -270,11 +274,107 @@ This `settings.xml` is then referenced in pipelines via `withMaven(globalMavenSe
 
 > Reference: [nexus-jenkins.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/nexus/nexus-jenkins.md)
 
+#### Troubleshooting: settings.xml — Two Common Mistakes
+
+While setting this up, I ran into two issues that are easy to miss:
+
+**Issue 1 — Missing XML document wrapper (bare `<servers>` block)**
+
+The file must be a complete, valid XML document. A bare `<servers>...</servers>` block without the `<?xml ...?>` declaration and `<settings>` root element will be silently ignored by Maven, causing a 401 Unauthorized error when pushing to Nexus.
+
+Wrong:
+```xml
+<servers>
+  <server>...</server>
+</servers>
+```
+
+Correct: the full structure shown above — `<?xml version="1.0"?>` + `<settings xmlns="...">` wrapper is mandatory.
+
+**Issue 2 — Special characters in passwords must be XML-escaped**
+
+If your Nexus password contains special characters (e.g. `&`, `<`, `>`, `"`, `'`), they must be escaped in the XML file or Maven will fail to parse the file entirely.
+
+| Character | Escaped form |
+|---|---|
+| `&` | `&amp;` |
+| `<` | `&lt;` |
+| `>` | `&gt;` |
+| `"` | `&quot;` |
+| `'` | `&apos;` |
+
+Example — password `P@ss&Word!` becomes:
+```xml
+<password>P@ss&amp;Word!</password>
+```
+
+---
+
+## Phase 9 — Nexus Docker Registry
+
+### Step 9 — Add a Docker (Hosted) Repository in Nexus
+
+To push Docker images to Nexus from the pipeline, I created a dedicated Docker hosted repository. Nexus uses the **Docker Registry HTTP API v2** — a completely separate protocol from Maven — so it requires its own repository type.
+
+```
+Nexus UI → Settings → Repository → Repositories → Create repository → docker (hosted)
+  Name:    docker-hosted
+  Online:  ✓ checked
+```
+
+**Connector selection — Path based routing (no dedicated port needed):**
+
+Because my Nexus server sits behind a Cloudflare Tunnel (all external traffic arrives on port 443 via Cloudflare → Nginx → Nexus on port 8081), I cannot expose an additional TCP port for Docker. Instead, I selected **Path based routing**:
+
+```
+Repository Connectors:
+  ● Path based routing   ← selected this
+  ○ Other Connectors
+
+  HTTP:  (unchecked — no dedicated port)
+  HTTPS: (unchecked — no dedicated port)
+```
+
+With path-based routing, Docker clients use the repository name in the URL path instead of a port:
+
+```
+# Push format:
+docker push nexus.ibtisam-iq.com/docker-hosted/bankapp:1.0.0
+
+# Pull format:
+docker pull nexus.ibtisam-iq.com/docker-hosted/bankapp:1.0.0
+```
+
+No Nginx changes, no firewall port changes, no `insecure-registries` needed — everything flows through the existing port 443 tunnel.
+
+### Step 10 — Enable Docker Bearer Token Realm
+
+Docker login to Nexus requires the Bearer Token realm to be active. Without this, `docker login` will always return 401 even with correct credentials.
+
+```
+Nexus UI → Security → Realms
+  Move "Docker Bearer Token Realm" from Available → Active
+  Save
+```
+
+### Step 11 — Add GHCR Credential to Jenkins
+
+I also added a separate credential for pushing to GitHub Container Registry (GHCR), using a GitHub PAT with `write:packages` scope:
+
+```
+Kind:     Username with password
+Username: ibtisam-iq
+Password: ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxx   ← PAT with write:packages scope
+ID:       ghcr-creds
+```
+
+> Note: If your existing `github-creds` PAT already has `write:packages` scope, you can reuse it instead of creating a separate credential.
+
 ---
 
 ## Stack Ready
 
-After completing all 8 phases above, my CI/CD stack was fully operational:
+After completing all phases above, my CI/CD stack was fully operational:
 
 | What | Status |
 |---|---|
@@ -283,11 +383,13 @@ After completing all 8 phases above, my CI/CD stack was fully operational:
 | Nexus running with SSL | ✅ `https://nexus.ibtisam-iq.com` |
 | 10 pipeline tools on Jenkins OS PATH | ✅ mvn, node, docker, trivy, kubectl, helm, terraform, ansible, aws |
 | All Jenkins plugins installed | ✅ via `sudo install-plugins` |
-| 4 credentials configured | ✅ sonarqube-token, github-creds, docker-creds, nexus-creds |
+| 5 credentials configured | ✅ sonarqube-token, github-creds, docker-creds, nexus-creds, ghcr-creds |
 | SonarQube Scanner registered in Jenkins | ✅ `sonar-scanner` |
 | SonarQube server linked to Jenkins | ✅ `sonar-server` |
 | SonarQube webhook pointing to Jenkins | ✅ `/sonarqube-webhook/` |
-| Nexus `settings.xml` in Config File Provider | ✅ `maven-settings` |
+| Nexus `settings.xml` in Config File Provider | ✅ `maven-settings` (full XML wrapper + escaped password) |
+| Nexus Docker hosted repository | ✅ `docker-hosted` (path-based routing, no port) |
+| Docker Bearer Token Realm active | ✅ Nexus Security → Realms |
 
 The stack is now ready to execute any pipeline in this repository.
 
