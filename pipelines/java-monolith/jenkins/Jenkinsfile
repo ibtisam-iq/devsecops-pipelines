@@ -11,13 +11,20 @@ pipeline {
 
     agent any
 
-    // ── Tool blocks are ONLY for tools registered in Manage Jenkins → Tools.
-    // Maven and Docker are on the OS PATH (installed via install-pipeline-tools),
-    // so they do NOT need a tools block — Jenkins resolves them via shell.
-    // sonar-scanner IS registered in Tools → SonarQube Scanner, so it goes here.
-    tools {
-        jdk            'jdk-21'           // optional if JAVA_HOME is on PATH
-    }
+    // ── tools block is for tools registered in Manage Jenkins → Tools ONLY.
+    // JDK 21, Maven, Docker, Trivy, kubectl, Helm, Terraform, Ansible, AWS CLI
+    // are all installed system-wide on the Jenkins OS via install-pipeline-tools
+    // and are available on the OS PATH — Jenkins resolves them automatically
+    // through shell without any UI registration.
+    //
+    // The ONLY tool registered in Manage Jenkins → Tools is sonar-scanner
+    // (SonarQube Scanner), because it cannot be installed as a plain binary.
+    // It is managed exclusively through Jenkins and does not go in the tools block
+    // — it is injected via withSonarQubeEnv() instead.
+    //
+    // tools {
+    //     jdk 'jdk-21'    // NOT needed — JDK 21 is on OS PATH via install-pipeline-tools
+    // }
 
     // ── Environment variables available to every stage
     environment {
@@ -50,15 +57,10 @@ pipeline {
     }
 
     options {
-        // Keep only last 10 builds to save disk space
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        // Abort if the entire pipeline takes more than 45 minutes
         timeout(time: 45, unit: 'MINUTES')
-        // Do not run concurrent builds on same branch
         disableConcurrentBuilds()
-        // Add timestamps to every console log line
         timestamps()
-        // ANSI color in console output (requires AnsiColor plugin)
         ansiColor('xterm')
     }
 
@@ -98,9 +100,8 @@ pipeline {
         //     (pom.xml, package.json, requirements.txt)
         //   - Misconfigurations in Dockerfile, compose.yml
         //
-        // This runs BEFORE build — fail-fast on secrets or
+        // Runs BEFORE build — fail-fast on secrets or
         // critical dependency CVEs before wasting build time.
-        //
         // --scanners secret,vuln,config covers all three.
         // EXIT-CODE 1 on CRITICAL findings fails the build.
         // Full report archived as trivy-fs-report.json.
@@ -168,10 +169,8 @@ pipeline {
             }
             post {
                 always {
-                    // Publish JUnit test results
                     junit testResults: "${APP_DIR}/target/surefire-reports/*.xml",
                           allowEmptyResults: true
-                    // Publish JaCoCo HTML coverage report
                     jacoco(
                         execPattern:    "${APP_DIR}/target/jacoco.exec",
                         classPattern:   "${APP_DIR}/target/classes",
@@ -338,8 +337,8 @@ pipeline {
         //   Password: GitHub PAT with scopes: write:packages, read:packages
         //   ID:       ghcr-creds
         //
-        // NOTE: You can reuse github-creds here if your existing
-        // PAT already has write:packages scope. If so, replace
+        // NOTE: You can reuse github-creds if your existing PAT
+        // already has write:packages scope. If so, replace
         // 'ghcr-creds' with 'github-creds' below.
         // ────────────────────────────────────────────────
         stage('Push to GHCR') {
@@ -417,7 +416,6 @@ pipeline {
         //             secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
         //         ]]) {
         //             sh """
-        //                 # Authenticate Docker to ECR — token valid for 12 hours
         //                 aws ecr get-login-password --region ${AWS_REGION} \
         //                     | docker login --username AWS --password-stdin ${ECR_REGISTRY}
         //
@@ -476,14 +474,14 @@ pipeline {
         always {
             echo '🧹 Cleaning up local Docker images...'
             sh """
-                docker rmi ${IMAGE_NAME}:${IMAGE_TAG}              || true
-                docker rmi ${IMAGE_NAME}:latest                    || true
-                docker rmi ${GHCR_IMAGE}:${IMAGE_TAG}              || true
-                docker rmi ${GHCR_IMAGE}:latest                    || true
-                docker rmi ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG} || true
-                docker rmi ${NEXUS_DOCKER}/${APP_NAME}:latest       || true
-                # docker rmi ${ECR_IMAGE}:${IMAGE_TAG}             || true
-                # docker rmi ${ECR_IMAGE}:latest                   || true
+                docker rmi ${IMAGE_NAME}:${IMAGE_TAG}               || true
+                docker rmi ${IMAGE_NAME}:latest                     || true
+                docker rmi ${GHCR_IMAGE}:${IMAGE_TAG}               || true
+                docker rmi ${GHCR_IMAGE}:latest                     || true
+                docker rmi ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG}  || true
+                docker rmi ${NEXUS_DOCKER}/${APP_NAME}:latest        || true
+                # docker rmi ${ECR_IMAGE}:${IMAGE_TAG}              || true
+                # docker rmi ${ECR_IMAGE}:latest                    || true
             """
             sh 'rm -rf cd-repo'
             cleanWs()
