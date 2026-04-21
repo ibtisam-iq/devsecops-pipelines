@@ -13,7 +13,10 @@ The content in both is the same in terms of what it does. The difference is in *
 
 ## The Old Jenkinsfile (Reference)
 
-```grovy
+<details>
+<summary>Click to expand the old Jenkinsfile</summary>
+
+```groovy
 pipeline {
     agent any
 
@@ -187,6 +190,8 @@ post {
     }
 }
 ```
+
+</details>
 
 ---
 
