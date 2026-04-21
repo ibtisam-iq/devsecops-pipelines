@@ -1,13 +1,13 @@
 # Jenkinsfile — How and Why I Wrote It This Way
 
-This document is my own reference for the `java-monolith` Jenkins pipeline. I wrote it so that when I come back to this file after a gap, I can immediately remember why I used a specific directive instead of the simpler version I used before.
+This document is my detailed reference for the `java-monolith` Jenkins pipeline. I wrote it so that when I revisit this project later, I can immediately remember not only **what each directive does**, but also **why I wrote it this way**, **what I changed compared to the old version**, and **what I had to troubleshoot and correct while building it**.
 
 I have two versions of a Jenkinsfile for this project:
 
-1. **The older one** — which I wrote about a year ago when I was learning Jenkins basics. Simple, readable, uses direct `mvn` and `sonar-scanner` commands.
-2. **The current one** — which I wrote now as a production-grade DevSecOps pipeline. More explicit, more structured, covers more systems.
+1. **The older one** — written when I was learning Jenkins fundamentals. It is simpler, shorter, and useful as a learning baseline.
+2. **The current one** — written now as a production-oriented DevSecOps CI pipeline. It is more explicit, more defensive, and better aligned with how real CI systems behave in practice.
 
-The content in both is the same in terms of what it does. The difference is in **how explicitly** it handles things, and **why**.
+The business goal of both files is the same: build, test, scan, package, and publish the Java monolith. The difference is in **how much control, traceability, and operational correctness** the newer pipeline has.
 
 ---
 
@@ -61,16 +61,10 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('sonar-server') {                 // server name configured in jenkins
+                withSonarQubeEnv('sonar-server') {
                     sh '''
-                        $SCANNER_HOME/bin/sonar-scanner \
+                        $SCANNER_HOME/bin/sonar-scanner \\
                     '''
-                        /*
-                        -Dsonar.projectName=IbtisamIQbankapp \
-                        -Dsonar.projectKey=IbtisamIQbankapp \
-                        -Dsonar.java.binaries=target \
-                        -Dsonar.branch.name=ibtisam
-                        */
                 }
             }
         }
@@ -126,21 +120,13 @@ pipeline {
         stage('Update Manifest File') {
             steps {
                 script {
-                    cleanWs()         // Clean workspace before starting
+                    cleanWs()
                     withCredentials([usernamePassword(credentialsId: 'git', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
                         sh '''
-                            # Clone the Mega-Project-CD repository
-                            # git clone https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/mibtisam/Mega-Project-CD.git
-
-                            # Update the image tag in the manifest.yaml file
                             cd Mega-Project-CD
                             sed -i "s|mibtisam/bankingapp-java-mysql:.*|mibtisam/bankingapp-java-mysql:${IMAGE_TAG}|" manifest/manifest.yaml
-
-                            # Confirm changes
                             echo "Updated manifest file contents:"
                             cat manifest/manifest.yaml
-
-                            # Commit and push the changes
                             git config user.name "Ibtisam"
                             git config user.email "loveyou@ibtisam.com"
                             git add manifest/manifest.yaml
@@ -153,7 +139,6 @@ pipeline {
         }
     }
 }
-    // Post Actions
 
 post {
     always {
@@ -184,7 +169,6 @@ post {
                 from: 'ibtisamiq@tempmail.com',
                 replyTo: 'ibtisamiq@tempmail.com',
                 mimeType: 'text/html',
-
             )
         }
     }
@@ -195,9 +179,9 @@ post {
 
 ---
 
-## Overall structure
+## Overall Structure
 
-Both are **Declarative Pipelines**. That means I must use the fixed skeleton:
+Both are **Declarative Pipelines**. That means the Jenkinsfile must follow the fixed high-level skeleton:
 
 ```groovy
 pipeline {
@@ -209,11 +193,13 @@ pipeline {
 }
 ```
 
-`pipeline {}` is the root block — everything lives inside it. `agent any` means run on any available Jenkins node. Both the old and new files use `agent any` because I only have one node.
+`pipeline {}` is the root block. `agent any` means Jenkins can run this job on any available node. In my setup, I currently use a single Jenkins node, so `agent any` effectively means: run on my main Jenkins executor.
+
+The important thing I learned while rewriting this file is that **Declarative Pipeline looks flexible at first, but its structure is actually strict**. Some directives can appear only at the top level, some only inside `stages`, and some only inside `steps`. That structural strictness became very important later when I had to troubleshoot coverage publishing.
 
 ---
 
-## Why I removed the `tools {}` block
+## Why I Removed the `tools {}` Block
 
 The old file had:
 
@@ -223,15 +209,20 @@ tools {
 }
 ```
 
-That told Jenkins: "resolve the Maven installation named `maven3` from Manage Jenkins → Tools, and put it on the PATH for this job."
+That tells Jenkins to resolve a Maven installation named `maven3` from **Manage Jenkins → Tools** and inject it into the job's `PATH`.
 
-I removed this in the new file because Maven, JDK 21, Docker, Trivy, kubectl, Helm, Terraform, Ansible, and AWS CLI are all installed system-wide on the Jenkins OS via `install-pipeline-tools`. They are already on the system `PATH`. Jenkins finds them automatically through shell — no UI registration needed.
+I removed that from the current pipeline because my setup is different now. I install Maven, JDK 21, Docker, Trivy, kubectl, Helm, Terraform, Ansible, and AWS CLI **system-wide on the Jenkins host OS** using my own bootstrap process. Because they already live on the system `PATH`, Jenkins shell steps can use them directly. There is no need for Jenkins to resolve them from its UI-managed tool registry.
 
-The `tools {}` block is only useful when a tool is managed through Jenkins UI and Jenkins needs to resolve its installation path dynamically. Since I handle tool installation at the OS level, this block is unnecessary and I commented it out.
+So the design decision here is simple:
+
+- **Old approach** — Jenkins manages tool installation paths.
+- **Current approach** — the operating system manages tool installation paths; Jenkins just executes them.
+
+That makes the Jenkinsfile cleaner and keeps server configuration more consistent with how I manage the rest of my infrastructure.
 
 ---
 
-## Why I removed `SCANNER_HOME = tool 'sonar-scanner'`
+## Why I Removed `SCANNER_HOME = tool 'sonar-scanner'`
 
 The old file had:
 
@@ -241,29 +232,38 @@ environment {
 }
 ```
 
-and then used it as:
+and then later:
 
 ```groovy
 sh '$SCANNER_HOME/bin/sonar-scanner'
 ```
 
-That pattern is for calling the **standalone SonarQube Scanner binary** directly. Jenkins needs `SCANNER_HOME` to know where the binary lives.
+That pattern is correct only when the pipeline uses the **standalone SonarQube Scanner CLI binary**.
 
-In the new file I switched to the **Maven Sonar plugin** approach:
+In the current Jenkinsfile, I changed the Sonar integration strategy entirely. Instead of using the standalone scanner binary, I switched to the **Maven Sonar plugin**:
 
 ```groovy
 withSonarQubeEnv('sonar-server') {
-    sh 'mvn sonar:sonar ...'
+    withMaven(globalMavenSettingsConfig: 'maven-settings') {
+        sh '''
+            mvn sonar:sonar ...
+        '''
+    }
 }
 ```
 
-Here, Maven handles the analysis internally through its plugin. `withSonarQubeEnv('sonar-server')` injects `SONAR_HOST_URL` and the token automatically. There is no binary path to resolve, so `SCANNER_HOME` is not needed.
+This is a better fit because the project is already Maven-based. Maven already knows the project structure, target classes, test lifecycle, and plugin ecosystem. Letting Maven drive Sonar analysis keeps the pipeline more coherent.
 
-Both approaches work. I chose `mvn sonar:sonar` for the current pipeline because the project is Maven-based, and the plugin path is cleaner for that setup.
+So:
+
+- **Old file** → standalone scanner binary → needs `SCANNER_HOME`
+- **Current file** → Maven plugin execution → does **not** need `SCANNER_HOME`
+
+I also rely on `withSonarQubeEnv('sonar-server')` to inject the SonarQube server URL and token automatically, so there is no reason to manually resolve a scanner installation path anymore.
 
 ---
 
-## Why the `environment {}` block grew
+## Why the `environment {}` Block Became Larger
 
 The old file only needed:
 
@@ -274,31 +274,37 @@ environment {
 }
 ```
 
-The new pipeline interacts with more systems: source directory, Maven settings, Docker Hub, GHCR, Nexus Docker registry, and the CD repository. I centralised all reusable values here so I do not repeat hardcoded strings across stages:
+The current pipeline interacts with many more systems, so I centralised all reusable values in one place:
 
 ```groovy
 environment {
-    APP_NAME     = 'bankapp'
-    APP_VERSION  = '0.0.1-SNAPSHOT'
-    DOCKER_USER  = 'mibtisam'
-    IMAGE_NAME   = "${DOCKER_USER}/${APP_NAME}"
-    GHCR_USER    = 'ibtisam-iq'
-    GHCR_IMAGE   = "ghcr.io/${GHCR_USER}/${APP_NAME}"
-    NEXUS_URL    = 'https://nexus.ibtisam-iq.com'
-    NEXUS_DOCKER = 'nexus.ibtisam-iq.com'
-    APP_DIR      = 'pipelines/java-monolith/app'
+    APP_NAME       = 'bankapp'
+    APP_VERSION    = '0.0.1-SNAPSHOT'
+    GROUP_ID       = 'com.ibtisamiq'
+    DOCKER_USER    = 'mibtisam'
+    IMAGE_NAME     = "${DOCKER_USER}/${APP_NAME}"
+    GHCR_USER      = 'ibtisam-iq'
+    GHCR_IMAGE     = "ghcr.io/${GHCR_USER}/${APP_NAME}"
+    NEXUS_URL      = 'https://nexus.ibtisam-iq.com'
+    NEXUS_DOCKER   = 'nexus.ibtisam-iq.com'
+    APP_DIR        = 'pipelines/java-monolith/app'
 }
 ```
 
-If the Docker username, Nexus host, or app directory changes, I only update one place.
+This design has two advantages:
 
-`IMAGE_TAG` is not here — it is set dynamically in the `Versioning` stage because it needs a Git SHA which is only available at runtime.
+1. **Single source of truth** — reusable values are defined once.
+2. **Less hardcoding inside stages** — stage logic stays focused on actions, not repeated strings.
+
+For example, if the Docker namespace or Nexus hostname changes, I only update the value once instead of hunting through multiple stages.
+
+Notice that `IMAGE_TAG` is not defined statically here. That is intentional. It depends on a Git SHA, and a Git SHA only becomes available after checkout at runtime.
 
 ---
 
-## Why I added an `options {}` block
+## Why I Added an `options {}` Block
 
-The old file had no `options` block. The new one has:
+The old file had no `options` block. The current one adds:
 
 ```groovy
 options {
@@ -310,17 +316,35 @@ options {
 }
 ```
 
-These are not build steps — they are operational controls for how the pipeline behaves on the Jenkins server.
+These are not build steps. They are **pipeline behavior controls**.
 
-- `buildDiscarder` — keeps only the last 10 builds so old logs and artifacts do not fill up disk.
-- `timeout` — kills the pipeline if it hangs. Protects the agent from jobs that freeze due to network or registry issues.
-- `disableConcurrentBuilds` — prevents two runs of the same job from clashing, especially since both would push the same image tags and update the same CD repo.
-- `timestamps` — adds timestamps to console logs so I can see exactly when each step started.
-- `ansiColor('xterm')` — lets colored output from Maven, Trivy, and other tools display properly in Jenkins logs.
+### Why each one exists
+
+- `buildDiscarder(logRotator(numToKeepStr: '10'))`
+  - Keeps only the last 10 builds.
+  - Prevents Jenkins disk usage from growing forever.
+
+- `timeout(time: 45, unit: 'MINUTES')`
+  - Kills the pipeline if it hangs.
+  - Protects the Jenkins executor from indefinitely stuck jobs.
+
+- `disableConcurrentBuilds()`
+  - Prevents overlapping runs of the same pipeline.
+  - Important because both runs would otherwise try to push the same tags and edit the same CD repo.
+
+- `timestamps()`
+  - Adds timestamps to console logs.
+  - Very useful during troubleshooting when I need to know exactly when a stage started or where the delay happened.
+
+- `ansiColor('xterm')`
+  - Preserves colored console output.
+  - Makes Trivy and other CLI output much easier to read inside Jenkins.
+
+This block is one of the places where the current Jenkinsfile moves from “it works” to “it behaves well on a real Jenkins server.”
 
 ---
 
-## Why the Checkout stage looks so different
+## Why the Checkout Stage Changed Completely
 
 ### Old style
 
@@ -328,9 +352,9 @@ These are not build steps — they are operational controls for how the pipeline
 git branch: 'main', url: 'https://github.com/ibtisam-iq/BankingApp-Java-MySQL.git'
 ```
 
-Simple and fine when source code lives directly in the root of one repo.
+That was fine when the application repository itself was the direct source being built.
 
-### New style
+### Current style
 
 ```groovy
 checkout([
@@ -350,39 +374,65 @@ checkout([
 ])
 ```
 
-The repository structure changed. The source code now lives at `pipelines/java-monolith/app` inside this pipeline repository as a submodule. The short `git` step does not know how to initialise submodules. I need the full `checkout()` step with `SubmoduleOption` configured.
+The repository model changed. The source code for the app now lives inside this pipeline repo as a **Git submodule** under:
 
-### Line by line
+```text
+pipelines/java-monolith/app/
+```
 
-| Line | What it means |
+The short `git` step does not properly handle submodule initialization. That is why I switched to the full `checkout()` call with `SubmoduleOption`.
+
+### Why each important line exists
+
+| Directive | Why it exists |
 |---|---|
-| `$class: 'GitSCM'` | Use the Git SCM plugin for this checkout. Unlocks advanced options. |
-| `branches: [[name: '*/main']]` | Check out the `main` branch. The `*/` is the Jenkins Git plugin's branch pattern format. |
-| `$class: 'SubmoduleOption'` | Configure how submodules are handled during checkout. |
-| `disableSubmodules: false` | Do not skip submodules — initialise them. |
-| `parentCredentials: true` | Use the same credentials I provided for the parent repo to access submodules too. Needed for private submodules. |
-| `recursiveSubmodules: true` | Also fetch nested submodules if any submodule itself has submodules. |
-| `trackingSubmodules: false` | Check out the exact commit pinned in the parent, not the latest commit of a branch. Better for reproducibility. |
-| `url` | The pipeline repository URL to clone. |
-| `credentialsId: 'github-creds'` | Use the GitHub credentials I stored in Jenkins under this ID. |
+| `$class: 'GitSCM'` | Gives access to the full Jenkins Git plugin configuration model. |
+| `branches: [[name: '*/main']]` | Explicitly checks out `main` using Jenkins Git plugin syntax. |
+| `disableSubmodules: false` | Ensures submodules are not skipped. |
+| `parentCredentials: true` | Reuses parent repo credentials for submodules if needed. |
+| `recursiveSubmodules: true` | Supports nested submodules if they ever appear later. |
+| `trackingSubmodules: false` | Checks out the exact pinned submodule commit, which is what I want for reproducible builds. |
+| `credentialsId: 'github-creds'` | Uses the stored Jenkins GitHub credential rather than anonymous clone. |
+
+This stage is not longer because Jenkins suddenly became more complicated. It is longer because the repository architecture is more advanced now.
 
 ---
 
-## Why Trivy filesystem scan runs before build
+## Why `dir(APP_DIR)` Appears Everywhere
 
-The old file ran Trivy filesystem scan after compile and test:
+The old pipeline assumed the application lived at the workspace root.
+
+That is no longer true. The actual source is now inside:
+
+```text
+pipelines/java-monolith/app/
+```
+
+So any stage that needs `pom.xml`, `Dockerfile`, source code, or Maven targets must first change into that directory:
 
 ```groovy
-stage('Trivy FS Scan') {
-    steps {
-        sh "trivy fs --format table -o fs-report.html ."
-    }
+dir(APP_DIR) {
+    sh 'mvn clean verify ...'
 }
 ```
 
-I moved it to run **before** build in the new pipeline. The reason is fail-fast. If there is a hardcoded secret or a critical CVE in `pom.xml`, I want to know immediately — before wasting time on compile, test, and SonarQube.
+Without `dir(APP_DIR)`, Jenkins would execute `mvn`, `docker build`, and Trivy scans from the wrong directory. Maven would fail because there would be no `pom.xml` in the workspace root.
 
-The new scan is also more explicit:
+This one change — introducing `APP_DIR` and wrapping build-related steps in `dir(APP_DIR)` — is what made the pipeline compatible with the submodule-based project structure.
+
+---
+
+## Why Trivy Filesystem Scan Runs Before Build
+
+The old file ran:
+
+```groovy
+trivy fs --format table -o fs-report.html .
+```
+
+It was simple, but it was also loosely defined.
+
+In the new file, I moved Trivy filesystem scanning **earlier**, before build and test, and made it more explicit:
 
 ```groovy
 trivy fs \
@@ -395,44 +445,67 @@ trivy fs \
     . || true
 ```
 
-- `--scanners secret,vuln,config` — scans for hardcoded secrets, dependency CVEs, and Dockerfile/config misconfigurations. The old scan did not specify scanners explicitly.
-- `--format json --output trivy-fs-report.json` — produces a machine-readable report archived as a Jenkins artifact.
-- The second Trivy run after it prints a human-readable table in console for HIGH and MEDIUM findings.
-- `dir(APP_DIR)` — runs in the correct subdirectory since the app is not at workspace root.
+Then I run a second human-readable table scan for HIGH and MEDIUM findings.
+
+### Why this is better
+
+- **Fail-fast principle** — if source files contain hardcoded secrets, critical vulnerabilities, or obvious misconfigurations, I want to know before spending time on compilation and analysis.
+- **Explicit scanners** — `secret,vuln,config` documents clearly what is being scanned.
+- **Archivable report** — JSON output becomes a Jenkins artifact.
+- **Cleaner logs** — `--no-progress` removes unnecessary spinner noise.
+
+The old scan was functional. The new scan is more operationally useful.
 
 ---
 
-## Why I created a separate Versioning stage
+## Why I Added a Separate Versioning Stage
 
-The old file used:
+The old image tag was simple:
 
 ```groovy
 IMAGE_TAG = "v${BUILD_NUMBER}"
 ```
 
-Tags like `v15` are simple but tell me nothing about which code they contain.
+That produces values like:
 
-The new file builds:
-
-```groovy
-env.IMAGE_TAG = "${APP_VERSION}-${shortSha}-${BUILD_NUMBER}"
-// example: 0.0.1-SNAPSHOT-ab3f12c-42
+```text
+v12
+v13
+v14
 ```
 
-This tag encodes:
-- the Maven project version from `pom.xml`
-- the Git commit short SHA
+Those tags are valid, but they are not traceable. They tell me nothing about which Git commit produced the image.
+
+The current pipeline generates the image tag dynamically in a dedicated stage:
+
+```groovy
+script {
+    def shortSha = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+    env.IMAGE_TAG = "${APP_VERSION}-${shortSha}-${BUILD_NUMBER}"
+}
+```
+
+Example:
+
+```text
+0.0.1-SNAPSHOT-ab3f12c-42
+```
+
+Now the image tag carries:
+
+- the application version
+- the exact source commit
 - the Jenkins build number
 
-So when I see an image in a registry, I immediately know which commit it was built from.
+That is much better for traceability, debugging, rollback analysis, and cross-checking what actually got deployed.
 
-`IMAGE_TAG` is set inside a `script {}` block because it involves a shell command (`git rev-parse --short HEAD`) and dynamic string building. Environment variables that need runtime computation cannot go in the static `environment {}` block at the top.
+I placed this in a dedicated `Versioning` stage because it is an important pipeline event in its own right: **turning source state into a uniquely identifiable artifact version**.
 
 ---
 
-## Why Build and Test became `mvn clean verify`
+## Why Build and Test Became `mvn clean verify`
 
-The old file split these into separate stages:
+The old file split compilation and tests into two stages:
 
 ```groovy
 stage('Compile') {
@@ -444,7 +517,7 @@ stage('Testing') {
 }
 ```
 
-The new file merges them into one:
+The current file merges these into one stronger lifecycle command:
 
 ```groovy
 withMaven(globalMavenSettingsConfig: 'maven-settings') {
@@ -452,35 +525,58 @@ withMaven(globalMavenSettingsConfig: 'maven-settings') {
 }
 ```
 
-- `mvn clean verify` runs a fuller Maven lifecycle: clean → compile → test → verify. It is more thorough than calling compile and test separately.
-- `withMaven(globalMavenSettingsConfig: 'maven-settings')` injects the `settings.xml` I stored in Jenkins Config File Provider. This is needed so Maven can authenticate against Nexus for dependency resolution if any internal artifacts are required.
-- `-B` is batch mode. Better for CI logs — no interactive prompts.
-- `--no-transfer-progress` removes the noisy download progress lines from logs.
+### Why I made this change
 
-The `post { always { ... } }` block inside this stage publishes JUnit test results and JaCoCo coverage reports to Jenkins. The old file did not do this. It means Jenkins now shows parsed test counts and coverage trends in the build UI, not just a pass/fail result.
+- `clean verify` covers a broader, more CI-appropriate lifecycle.
+- It ensures the workspace is cleaned before build.
+- It runs compile, tests, packaging-related lifecycle phases, and verification in one flow.
+- `withMaven(...)` injects the managed `settings.xml`, which is better than relying on ad hoc Maven environment assumptions.
+- `-B` keeps Maven non-interactive.
+- `--no-transfer-progress` keeps logs readable.
+
+This is also where I intended Jenkins to publish **JUnit test results** and **JaCoCo coverage** — which later turned into an important troubleshooting lesson.
 
 ---
 
-## Why SonarQube analysis uses `mvn sonar:sonar` instead of `$SCANNER_HOME/bin/sonar-scanner`
+## Why SonarQube Analysis Uses `mvn sonar:sonar`
 
-Already explained in the `SCANNER_HOME` section above. The key point is:
-
-- Old file → standalone scanner binary → needs `SCANNER_HOME` path
-- New file → Maven Sonar plugin → `withSonarQubeEnv()` handles credentials and URL
-
-The new invocation also passes JaCoCo coverage paths:
+The older Jenkinsfile used the standalone scanner path:
 
 ```groovy
--Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+$SCANNER_HOME/bin/sonar-scanner
 ```
 
-This wires up coverage data from the test stage into the SonarQube analysis so the quality gate can include coverage metrics.
+The current file uses:
+
+```groovy
+withSonarQubeEnv('sonar-server') {
+    withMaven(globalMavenSettingsConfig: 'maven-settings') {
+        sh '''
+            mvn sonar:sonar \
+                -Dsonar.projectKey=IbtisamIQbankapp \
+                -Dsonar.projectName=IbtisamIQbankapp \
+                -Dsonar.java.binaries=target/classes \
+                -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                -B --no-transfer-progress
+        '''
+    }
+}
+```
+
+### Why this is better for this project
+
+- The project is Maven-native, so Sonar analysis naturally belongs in Maven.
+- Coverage data from JaCoCo can be passed in directly using Maven build outputs.
+- `withSonarQubeEnv` injects server URL and auth automatically.
+- The pipeline stays consistent: build system remains Maven, not Maven + external scanner binary.
+
+This also made the file easier to explain later: **one ecosystem, one toolchain path**.
 
 ---
 
-## Why the Quality Gate changed
+## Why the Quality Gate Changed
 
-Old file:
+Old version:
 
 ```groovy
 timeout(time: 1, unit: 'HOURS') {
@@ -488,7 +584,7 @@ timeout(time: 1, unit: 'HOURS') {
 }
 ```
 
-New file:
+Current version:
 
 ```groovy
 timeout(time: 5, unit: 'MINUTES') {
@@ -496,47 +592,56 @@ timeout(time: 5, unit: 'MINUTES') {
 }
 ```
 
-Two changes:
+### Why I changed it
 
-1. `abortPipeline: false` → `abortPipeline: true` — the new pipeline fails hard on gate failure. I do not want the pipeline to continue and push a bad image just because the gate said it was poor code.
-2. 1 hour → 5 minutes — the SonarQube webhook fires back to Jenkins within seconds of analysis completing. 5 minutes is a reasonable ceiling. 1 hour was too forgiving and could mask a hanging step.
-3. `credentialsId: 'sonar-token'` is removed because `withSonarQubeEnv('sonar-server')` already handles authentication upstream. The quality gate step reuses that context automatically.
+- `abortPipeline: true` means the build stops if quality fails.
+- I do not want to continue into packaging, image build, and registry push if static analysis says the code quality gate failed.
+- `credentialsId` is no longer needed there because the authentication context is already handled by `withSonarQubeEnv` during analysis.
+- 5 minutes is a more realistic timeout than 1 hour for a webhook round-trip.
+
+The old version was permissive. The current one enforces policy.
 
 ---
 
-## Why there is no separate `Package` stage
+## Why There Is No Separate `Package` Stage Anymore
 
 The old file had:
 
 ```groovy
 stage('Package') {
-    steps { sh "mvn package" }
+    steps {
+        sh "mvn package"
+    }
 }
 ```
 
-I removed this because `mvn clean verify` already handles compile, test, and packaging in the Build & Test stage. Running `mvn package` separately would be a redundant Maven pass. The `Publish JAR to Nexus` stage uses `mvn deploy -DskipTests` which also handles packaging internally before deploying.
+I removed that stage because `mvn clean verify` already goes far enough in the lifecycle that running a separate package stage becomes redundant.
+
+Then later, `mvn deploy -DskipTests` handles deployment to Nexus. So packaging is not missing — it is simply no longer duplicated.
 
 ---
 
-## Why `mvn deploy` uses `-DskipTests`
+## Why `mvn deploy` Uses `-DskipTests`
 
 ```groovy
 sh 'mvn deploy -DskipTests -B --no-transfer-progress'
 ```
 
-Tests already ran in the `Build & Test` stage. Running them again during deploy would double the test execution time for no benefit. `-DskipTests` skips them on the deploy pass.
+Tests already ran earlier in the Build & Test stage. Running them a second time during deploy would waste time without adding value.
+
+This is a classic CI optimization: **run tests once in the correct validation stage, then reuse the validated build output for publishing**.
 
 ---
 
-## Why Docker Build tags for multiple registries at once
+## Why Docker Build Became More Explicit
 
-Old file:
+Old version:
 
 ```groovy
-sh "docker build -t mibtisam/bankingapp-java-mysql:$IMAGE_TAG ."
+docker build -t mibtisam/bankingapp-java-mysql:$IMAGE_TAG .
 ```
 
-New file:
+Current version:
 
 ```groovy
 docker build \
@@ -551,26 +656,35 @@ docker build \
     .
 ```
 
-- `--build-arg SERVER_PORT=8000` — passes a build argument into the Dockerfile at build time.
-- `--label` lines — attach OCI-standard metadata labels to the image. When I inspect the image later, I can see exactly which version, commit, and timestamp it came from.
-- Multiple `-t` flags — build once and apply all registry tags in that single build. This avoids rebuilding the image separately for Docker Hub and GHCR, which would be wasteful.
+### Why this is better
+
+- `--build-arg SERVER_PORT=8000` passes build-time configuration cleanly.
+- OCI labels add artifact metadata for traceability.
+- Multiple tags in one build avoid duplicate builds for different registries.
+- The image becomes easier to inspect and audit later.
+
+This is another example of the same design philosophy: not just "build an image" — build an image that is **traceable and multi-registry ready**.
 
 ---
 
-## Why registry push stages are separate
+## Why Registry Pushes Are Split into Separate Stages
 
-The old file had one push stage only for Docker Hub. The new file separates pushes into individual stages:
+The old Jenkinsfile only pushed to one registry. The current file breaks pushes into independent stages:
 
-- Push to Docker Hub
-- Push to GHCR
-- Push to Nexus Registry
-- Push to AWS ECR (commented out, ready for later)
+- Docker Hub
+- GHCR
+- Nexus Docker Registry
+- AWS ECR (prepared but commented out)
 
-This is cleaner for visibility. If Docker Hub push succeeds but GHCR fails, Jenkins shows exactly which stage failed. If everything is in one stage, a failure in the middle makes it unclear how far the push got.
+That improves observability.
+
+If Docker Hub succeeds but GHCR fails, Jenkins shows exactly where the problem occurred. If everything were collapsed into one shell script, failure visibility would be worse.
+
+This is a small design choice, but it makes troubleshooting and demo explanation much better.
 
 ---
 
-## Why I use `withCredentials(...)` and explicit `docker login` instead of `withDockerRegistry(...)`
+## Why I Use `withCredentials(...)` + Explicit `docker login`
 
 The old file used:
 
@@ -580,94 +694,261 @@ withDockerRegistry(credentialsId: 'docker-cred') {
 }
 ```
 
-The new file uses:
+The current file uses explicit login/logout flows with `withCredentials(...)`.
+
+### Why I changed it
+
+- `withDockerRegistry` is convenient, but it is higher-level and less explicit.
+- GHCR and Nexus often behave more predictably when login is handled explicitly.
+- The authentication flow becomes visible to the reader.
+- Explicit `docker logout` helps prevent credential/session mixing between registries.
+
+So this was a tradeoff in favor of clarity and control over shorthand convenience.
+
+---
+
+## Why AWS ECR Is Already Written but Commented Out
+
+I wrote the AWS ECR integration stage in advance but left it commented because the AWS-side prerequisites are not yet provisioned in the lab.
+
+This was intentional. I wanted the Jenkinsfile to document the **next evolution path** of the pipeline while keeping the currently active version runnable.
+
+That means the file is both:
+
+- executable for the current stack
+- instructional for the upcoming stack extension
+
+---
+
+## Why the CD Repo Update Stage Exists
+
+The CI pipeline does not stop at producing an image. It must also hand off deployment state to the CD system.
+
+The current stage clones `platform-engineering-systems`, writes the new image tag into `java-monolith-image.env`, commits, and pushes.
+
+Compared to the old file, this version is cleaner because it:
+
+- removes stale repo state before cloning
+- sets Git identity explicitly
+- handles “nothing to commit” safely
+- adds `[skip ci]` to prevent recursive triggering
+- prepares the path for future manifest patching with `sed`
+
+This stage makes the CI → CD boundary explicit, which is important both architecturally and for explanation during interviews.
+
+---
+
+## The Troubleshooting I Had To Do While Writing the Current Jenkinsfile
+
+This section is the most important update compared to the earlier version of this document.
+
+When I first wrote the production-style Jenkinsfile, I correctly improved many things structurally, but I also introduced a **Jenkins DSL / plugin compatibility mistake** in the coverage publishing part.
+
+That mistake taught me an important lesson:
+
+> Writing a pipeline is not only about knowing shell commands and stages. It is also about understanding which Jenkins directives are valid in which scope, and which plugin owns which DSL.
+
+---
+
+## Problem 1 — I Put Coverage Publishing in the Wrong Scope
+
+### What I originally wrote
+
+Inside `stage('Build & Test')`, I added a stage-level post block like this:
 
 ```groovy
-withCredentials([usernamePassword(
-    credentialsId: 'docker-creds',
-    usernameVariable: 'DOCKER_USERNAME',
-    passwordVariable: 'DOCKER_PASSWORD'
-)]) {
-    sh """
-        echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
-        docker push ...
-        docker logout
-    """
+stage('Build & Test') {
+    steps {
+        dir(APP_DIR) {
+            withMaven(globalMavenSettingsConfig: 'maven-settings') {
+                sh 'mvn clean verify -B --no-transfer-progress'
+            }
+        }
+    }
+    post {
+        always {
+            junit testResults: "${APP_DIR}/target/surefire-reports/*.xml",
+                  allowEmptyResults: true
+            jacoco(
+                execPattern:    "${APP_DIR}/target/jacoco.exec",
+                classPattern:   "${APP_DIR}/target/classes",
+                sourcePattern:  "${APP_DIR}/src/main/java",
+                exclusionPattern: '**/*Test*'
+            )
+        }
+    }
 }
 ```
 
-`withDockerRegistry` is a higher-level helper that works well for Docker Hub but does not always behave cleanly with GHCR and Nexus. Using explicit `docker login` → push → `docker logout` works identically for any registry and makes the authentication flow visible in the code. I also explicitly logout after each push to avoid session overlap between registry stages.
+At first glance, this felt logical:
+
+- tests run inside the Build & Test stage
+- so publish test results and coverage inside that stage's `post`
+
+That is a natural assumption, but it turned out to be structurally wrong.
+
+### Why it was wrong
+
+In Declarative Pipeline, a stage-level `post {}` block supports normal steps, but publisher-style integrations like coverage reporting are not always valid there in the same way they are at the top-level pipeline `post` block.
+
+The important practical issue I discovered is this:
+
+- `junit(...)` and especially coverage publishers behave as **post-build publishing actions**
+- they belong in the **pipeline-level `post { always { ... } }`** area for safe, consistent execution
+- placing them inside the stage-level `post` can lead to unsupported DSL behavior depending on the step/plugin combination
+
+So although the intention was good, the location was wrong.
+
+### How I corrected it
+
+I removed the entire `post {}` block from inside `stage('Build & Test')` and moved test publishing + coverage publishing into the top-level `post { always { ... } }` section of the pipeline.
+
+That keeps the stage focused on **producing outputs**, and the top-level `post` focused on **publishing results and cleaning up**.
 
 ---
 
-## Why AWS ECR is written but commented out
+## Problem 2 — I Used the Wrong Coverage DSL
 
-The ECR stage is fully written but commented out because the AWS credentials and ECR repository do not exist yet in my current lab environment. I wrote it now so the integration is documented, ready, and can be activated by simply uncommenting and setting three environment variables at the top.
+### What I originally used
 
----
-
-## Why the CD Repo update stage exists
-
-The old file tried to do this:
+I used:
 
 ```groovy
-cd Mega-Project-CD
-sed -i "s|mibtisam/bankingapp-java-mysql:.*|...:${IMAGE_TAG}|" manifest/manifest.yaml
-git commit -m "Update image tag to ${IMAGE_TAG}"
-git push origin main
+jacoco(
+    execPattern:    "${APP_DIR}/target/jacoco.exec",
+    classPattern:   "${APP_DIR}/target/classes",
+    sourcePattern:  "${APP_DIR}/src/main/java",
+    exclusionPattern: '**/*Test*'
+)
 ```
 
-The new file does the same concept more cleanly:
+That syntax belongs to the older **JaCoCo Jenkins plugin**.
+
+### Why that became a problem
+
+My Jenkins setup uses the newer **Coverage Plugin**, whose DSL is different. The modern plugin expects:
 
 ```groovy
-rm -rf cd-repo
-git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/ibtisam-iq/platform-engineering-systems.git cd-repo
-cd cd-repo
-echo "IMAGE_TAG=${IMAGE_TAG}" > java-monolith-image.env
-git add .
-git commit -m "ci: update bankapp image tag to ${IMAGE_TAG} [skip ci]" || echo "Nothing to commit"
-git push origin main
+recordCoverage(...)
 ```
 
-Key improvements over the old version:
+not `jacoco(...)`.
 
-- `rm -rf cd-repo` cleans any leftover from a previous run before cloning fresh.
-- `git config user.email / user.name` sets identity so commits are attributed properly.
-- `|| echo "Nothing to commit"` handles the case where the same tag appears twice without failing the pipeline.
-- `[skip ci]` in the commit message prevents the CD repo's own CI from triggering a recursive loop.
-- The `sed` command is present as a comment, ready to activate once the Kubernetes manifests exist in that repo.
+So this was not just a placement problem. It was also a **plugin ownership problem**.
+
+I had effectively mixed:
+
+- current Jenkins pipeline structure
+- old coverage publishing syntax
+
+That mismatch is exactly the kind of issue that happens when you understand the build toolchain well but still need to be careful about Jenkins plugin evolution.
+
+### How I corrected it
+
+I replaced the old `jacoco(...)` call with:
+
+```groovy
+recordCoverage(
+    tools: [[
+        parser: 'JACOCO',
+        pattern: "${APP_DIR}/target/jacoco.exec"
+    ]],
+    sourceCodeRetention: 'EVERY_BUILD'
+)
+```
+
+Now the coverage publishing step matches the plugin actually installed in Jenkins.
+
+This is the correct mental model:
+
+- **JaCoCo Maven plugin** generates the coverage data file
+- **Jenkins Coverage Plugin** reads and publishes that file
+
+Those are related, but they are not the same thing.
 
 ---
 
-## Why `post {}` does cleanup
+## Problem 3 — ECR Cleanup Could Become a Future Trap
 
-The old file's `post` block only sent an email notification. The new file does:
+This was not an active runtime bug yet, but it was a hidden future hazard I identified while reviewing the file.
+
+### The situation
+
+In the cleanup section, I had commented-out ECR image removal lines:
+
+```groovy
+# docker rmi ${ECR_IMAGE}:${IMAGE_TAG} || true
+# docker rmi ${ECR_IMAGE}:latest || true
+```
+
+At the same time, the ECR variables in `environment {}` were also commented out.
+
+### Why this matters
+
+As long as those cleanup lines remain commented, there is no problem.
+
+But if someone later uncommented only the cleanup lines without also uncommenting and defining the ECR environment variables, Jenkins would fail with a missing property error because `ECR_IMAGE` would not exist.
+
+### How I corrected it
+
+I kept those lines commented but added an explicit note in the file that they must only be uncommented **together with** the ECR environment variable block.
+
+So this was a preventive fix — not a reactive one.
+
+---
+
+## What the Corrected Top-Level `post {}` Block Looks Like Now
+
+After troubleshooting and correction, the logic now lives in the proper top-level `post { always { ... } }` block:
 
 ```groovy
 post {
     always {
-        sh "docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true"
-        sh "docker rmi ${GHCR_IMAGE}:${IMAGE_TAG} || true"
-        // ... more image removals
+        junit testResults: "${APP_DIR}/target/surefire-reports/*.xml",
+              allowEmptyResults: true
+
+        recordCoverage(
+            tools: [[
+                parser: 'JACOCO',
+                pattern: "${APP_DIR}/target/jacoco.exec"
+            ]],
+            sourceCodeRetention: 'EVERY_BUILD'
+        )
+
+        sh """
+            docker rmi ${IMAGE_NAME}:${IMAGE_TAG}               || true
+            docker rmi ${IMAGE_NAME}:latest                     || true
+            docker rmi ${GHCR_IMAGE}:${IMAGE_TAG}               || true
+            docker rmi ${GHCR_IMAGE}:latest                     || true
+            docker rmi ${NEXUS_DOCKER}/${APP_NAME}:${IMAGE_TAG} || true
+            docker rmi ${NEXUS_DOCKER}/${APP_NAME}:latest       || true
+        """
+
         sh 'rm -rf cd-repo'
         cleanWs()
     }
 }
 ```
 
-On a real Jenkins server, Docker images and cloned repos accumulate across builds. Without cleanup, the agent disk fills up over time. I remove every image I built and every temp directory I created, then call `cleanWs()` to wipe the workspace entirely.
+This is structurally cleaner because the top-level `post` block now handles three categories of end-of-run behavior in one place:
+
+1. **publish reports**
+2. **clean up temporary/built artifacts**
+3. **reset the workspace**
+
+That separation is much more correct than trying to publish results inside one stage and clean up elsewhere.
 
 ---
 
-## Why `dir(APP_DIR)` appears in most stages
+## Why the `jacoco.exec` Path Is Correct
 
-The old pipeline assumed the application source was at workspace root. My current project stores the app at:
+While troubleshooting coverage, I also had to verify whether this path was correct:
 
+```groovy
+"${APP_DIR}/target/jacoco.exec"
 ```
-pipelines/java-monolith/app/
-```
 
-So any stage that needs to run Maven or Docker against the app source must first change directory:
+At first, this can look suspicious because Maven runs inside:
 
 ```groovy
 dir(APP_DIR) {
@@ -675,7 +956,124 @@ dir(APP_DIR) {
 }
 ```
 
-Without `dir(APP_DIR)`, Maven would look for `pom.xml` in the workspace root, not find it, and fail.
+So the question is: if Maven runs inside `APP_DIR`, does Jenkins still need the full path including `APP_DIR` when publishing coverage?
+
+The answer is yes.
+
+### Why
+
+`recordCoverage(...)` runs from Jenkins pipeline context, not from inside the earlier `dir(APP_DIR)` shell context. So Jenkins resolves the coverage pattern relative to the **workspace root**, not relative to the shell's working directory used earlier.
+
+That means this path is correct:
+
+```text
+$WORKSPACE/pipelines/java-monolith/app/target/jacoco.exec
+```
+
+So I did **not** need to change the pattern itself.
+
+The bug was not the path. The bug was:
+
+- wrong DSL (`jacoco` instead of `recordCoverage`)
+- wrong placement (stage-level post instead of top-level post)
+
+This distinction mattered during troubleshooting because it stopped me from “fixing” the wrong thing.
+
+---
+
+## What I Actually Troubleshooted
+
+The real troubleshooting sequence was not random. It followed a clear logic:
+
+### Step 1 — Review the intent
+
+I first checked what I was trying to achieve:
+
+- run Maven tests
+- generate JaCoCo coverage
+- publish test reports in Jenkins
+- publish coverage in Jenkins
+
+That part was conceptually valid.
+
+### Step 2 — Review plugin ownership
+
+Then I checked which plugin owns which DSL:
+
+- JaCoCo data generation happens in Maven
+- Jenkins coverage visualization depends on the Jenkins plugin installed
+- my Jenkins instance uses the Coverage Plugin
+
+That immediately made `jacoco(...)` suspicious.
+
+### Step 3 — Review Declarative Pipeline scope rules
+
+Then I checked where publishers should live in Declarative Pipeline.
+
+That exposed the second issue: even if the syntax were correct, the stage-level `post` placement was not the safest or most structurally correct place for coverage publishing.
+
+### Step 4 — Verify the file path assumption
+
+Before changing the path, I verified what `${APP_DIR}/target/jacoco.exec` resolves to from the Jenkins workspace. That turned out to be correct, so I left it unchanged.
+
+### Step 5 — Apply the smallest correct fix
+
+The final correction was:
+
+- delete the stage-level `post`
+- move `junit(...)` to top-level `post { always }`
+- replace `jacoco(...)` with `recordCoverage(...)`
+- keep ECR cleanup commented with an explanatory note
+
+That was the minimal correction that fixed the real problem without introducing unnecessary changes.
+
+---
+
+## What This Taught Me
+
+This troubleshooting exercise reinforced several practical lessons:
+
+### 1. Jenkins knowledge is not just shell knowledge
+
+A pipeline can have perfectly valid shell commands and still be structurally wrong from Jenkins' point of view. Jenkins has its own DSL rules, scope rules, and plugin-owned steps.
+
+### 2. Plugins matter as much as syntax
+
+Two steps may look related — `jacoco(...)` and `recordCoverage(...)` — but belong to different plugin generations. Knowing which plugin is actually installed matters.
+
+### 3. Scope matters in Declarative Pipeline
+
+Where I place a step is just as important as what the step does. A valid-looking directive in the wrong scope can still be incorrect.
+
+### 4. Do not “fix” the path unless the path is actually wrong
+
+It would have been easy to start changing `${APP_DIR}/target/jacoco.exec`, but that would have been solving the wrong problem. The path was fine. The DSL and placement were not.
+
+### 5. Production-grade pipelines are built iteratively
+
+A strong Jenkinsfile is usually not written perfectly in one attempt. It improves as I validate syntax, understand plugin behavior better, and tighten structure based on real troubleshooting.
+
+---
+
+## Why the Current Jenkinsfile Is Better Than the Old One
+
+The current file is better not because it is longer, but because it is more deliberate.
+
+It now has:
+
+- correct submodule-aware checkout
+- centralised environment values
+- operational pipeline controls via `options {}`
+- fail-fast Trivy scanning
+- traceable image tagging
+- Maven-native SonarQube analysis
+- hard quality gate enforcement
+- multi-registry image publishing
+- CI → CD handoff through a separate repo
+- proper top-level result publishing and cleanup
+- corrected coverage DSL and corrected publisher placement
+
+In other words, it does not just “run a build.” It behaves like a real CI pipeline that I can explain, debug, maintain, and extend.
 
 ---
 
@@ -684,6 +1082,7 @@ Without `dir(APP_DIR)`, Maven would look for `pom.xml` in the workspace root, no
 | Topic | File |
 |---|---|
 | Full CI/CD stack setup | [cicd-stack-setup.md](../../../docs/cicd-stack-setup.md) |
+| Main pipeline walkthrough | [../README.md](../README.md) |
 | Tool configuration rationale | [tool-configuration.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/tool-configuration.md) |
 | Credential types and injection | [credentials.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/credentials.md) |
 | SonarQube ↔ Jenkins integration | [sonar-jenkins.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/sonarqube/sonar-jenkins.md) |
