@@ -23,10 +23,11 @@ All three run as separate nodes in an [iximiuz Labs](https://labs.iximiuz.com) p
 I use iximiuz Labs playgrounds as my lab environment. The full CI/CD stack (4 nodes: 1 dev machine, 1 Jenkins server, 1 SonarQube server, 1 Nexus server) is defined in a single manifest file and spun up with one command.
 
 ```bash
-labctl playground create --base flexbox cicd -f ci-cd-stack.yml
+labctl playground create --base flexbox cicd-stack \
+  -f iximiuz/manifests/cicd-stack.yml
 ```
 
-The manifest is maintained in [silver-stack](https://github.com/ibtisam-iq/silver-stack/blob/main/iximiuz/manifests/ci-cd-stack.yml).
+The manifest is maintained in [SilverStack](https://github.com/ibtisam-iq/silver-stack/blob/main/iximiuz/manifests/cicd-stack.yml).
 
 Each server node boots with systemd, Nginx as reverse proxy, and cloudflared pre-configured for instant SSL via Cloudflare Tunnel — so all three services are immediately accessible on their custom domains.
 
@@ -48,7 +49,7 @@ Tools installed: Maven `3.9.15`, Node.js `22 LTS`, npm, Python `3.12`, Docker `2
 
 All tools land on system `PATH` — no Jenkins UI configuration needed for these.
 
-> See [tool_configuration.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/tool_configuration.md) for the full explanation of why PATH-installed tools require no Jenkins UI config.
+> See [tool-configuration.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/tool-configuration.md) for the full explanation of why PATH-installed tools require no Jenkins UI config.
 
 ### Step 2 — Install Jenkins Plugins
 
@@ -151,7 +152,7 @@ Added to Jenkins:
 
 ```
 Kind:     Username with password
-Username: ibtisam-iq
+Username: mibtisam
 Password: dckr_pat_xxxxxxxxxxxxxxxxxxxx   ← access token
 ID:       docker-creds
 ```
@@ -164,7 +165,7 @@ I created a dedicated CI user in Nexus rather than using the `admin` account:
 Nexus UI → Security → Users → Create local user
   User ID:  jenkins-ci
   Password: <set a strong password>
-  Roles:    nx-anonymous + specific repo permissions
+  Roles:    nx-admin + nx-anonymous
 ```
 
 Added to Jenkins:
@@ -195,7 +196,7 @@ Manage Jenkins → Tools → SonarQube Scanner installations → Add SonarQube S
 
 All other tools (Maven, Node.js, Docker, Trivy, kubectl, Helm, Terraform, Ansible, AWS CLI) were **not** configured here because they are already installed on the OS PATH and Jenkins finds them automatically via shell resolution.
 
-> Full reasoning in [tool_configuration.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/tool_configuration.md).
+> Full reasoning in [tool-configuration.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/tool-configuration.md).
 
 ---
 
@@ -296,7 +297,7 @@ The stack is now ready to execute any pipeline in this repository.
 
 | Topic | File |
 |---|---|
-| Why most tools need no Jenkins UI config | [tool_configuration.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/tool_configuration.md) |
+| Why most tools need no Jenkins UI config | [tool-configuration.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/tool-configuration.md) |
 | Credential types and injection methods | [credentials.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/jenkins/credentials.md) |
 | SonarQube ↔ Jenkins integration detail | [sonar-jenkins.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/sonarqube/sonar-jenkins.md) |
 | Nexus ↔ Jenkins integration detail | [nexus-jenkins.md](https://github.com/ibtisam-iq/nectar/blob/main/delivery/nexus/nexus-jenkins.md) |
