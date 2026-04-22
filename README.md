@@ -30,7 +30,7 @@ This is **Repo 2** in a deliberate three-repo separation of concerns:
 
 ```
 Repo 1 — Application Source           Repo 2 — CI (this repo)                  Repo 3 — Deployment
-──────────────────────────            ─────────────────────────────────         ───────────────────────────
+──────────────────────            ─────────────────────────         ───────────────────────────
 java-monolith-app              ──▶    devsecops-pipelines                ──▶   platform-engineering-systems
 node-monolith-app                      Checkout → Build → Test                   EC2 · ECS · EKS · GitOps
 python-monolith-app                    SonarQube quality gate                    Helm · Terraform · ArgoCD
@@ -38,7 +38,7 @@ python-monolith-app                    SonarQube quality gate                   
                                        Push JAR/wheel/tarball → Nexus
                                        Build & scan Docker image
                                        Push image → registry
-                                       Update image tag in Repo 3  ────────────────────────────────────────▶
+                                       Update image tag in Repo 3  ──────────────────────────────────────────▶
                                                                                  ArgoCD detects & deploys
 ```
 
@@ -80,7 +80,9 @@ A declarative Jenkins pipeline covering all DevSecOps stages. I ran this against
 
 **Step 5 — Write the GitHub Actions workflow**
 
-The same pipeline logic re-implemented as a GitHub Actions workflow — same stages, different syntax, different runner model. Both pipelines are independently runnable and cover the full CI sequence.
+The same pipeline logic re-implemented as a GitHub Actions workflow — same stages, different syntax, different runner model.
+
+**Placement convention:** The `ci.yml` that actually runs always lives in the **application source repo** at `.github/workflows/ci.yml`. GitHub Actions triggers on commits to the source repo, and the app code is already at the root — no submodule checkout or `APP_DIR` path needed. The copy kept here under `pipelines/<app-name>/github-actions/ci.yml` is a **reference and documentation copy** — useful for side-by-side comparison with the Jenkinsfile. This convention applies to every application onboarded into this repo.
 
 ---
 
@@ -90,6 +92,7 @@ Every pipeline I wrote in this repo follows this stage sequence, adapted to the 
 
 ```
 1.  Checkout          → Clone this repo with submodules; app source populates pipelines/<app>/app/
+                        (GitHub Actions: checkout source repo directly — no submodule needed)
 2.  Versioning        → Extract version from pom.xml / package.json / setup.py
 3.  Build             → Compile and package
                           Java   → mvn clean package
@@ -144,7 +147,7 @@ devsecops-pipelines/
 │   │   ├── jenkins/
 │   │   │   └── Jenkinsfile             ← Jenkins declarative pipeline (fully validated)
 │   │   ├── github-actions/
-│   │   │   └── ci.yml                  ← GitHub Actions workflow (same stages, different syntax)
+│   │   │   └── ci.yml                  ← Reference copy (live workflow is in java-monolith-app)
 │   │   └── README.md                   ← Pipeline walkthrough for this specific app
 │   │
 │   └── <next-app>/                     ← Added as each new application is onboarded
@@ -206,7 +209,7 @@ git add . && git commit -m "chore: update submodules" && git push
 
 To run the Java Monolith pipeline:
 - **Jenkins:** Create a Pipeline job, point it at `pipelines/<app-name>/jenkins/Jenkinsfile`
-- **GitHub Actions:** Workflow triggers automatically on push; see `pipelines/<app-name>/github-actions/ci.yml`
+- **GitHub Actions:** Workflow lives in the source repo and triggers automatically on push to that repo
 
 Full per-pipeline setup instructions are in each pipeline's own `README.md`.
 
