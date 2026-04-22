@@ -29,7 +29,7 @@ pipeline {
     // ── Environment variables available to every stage
     environment {
         // ── App metadata (sourced from pom.xml values)
-        APP_NAME       = 'bankapp'
+        APP_NAME       = 'java-monolith'
         APP_VERSION    = '0.0.1-SNAPSHOT'
         GROUP_ID       = 'com.ibtisamiq'
 
@@ -49,7 +49,7 @@ pipeline {
         // ECR_IMAGE      = "${ECR_REGISTRY}/${APP_NAME}"
 
         // ── Nexus Registry — path-based routing (no dedicated Docker port needed)
-        // Image format: nexus.ibtisam-iq.com/docker-hosted/bankapp:<tag>
+        // Image format: nexus.ibtisam-iq.com/docker-hosted/java-monolith:<tag>
         // Nexus repo must be created with "Path based routing" selected (not port-based).
         // Docker Bearer Token Realm must be active in Security → Realms.
         NEXUS_URL         = 'https://nexus.ibtisam-iq.com'
@@ -242,9 +242,9 @@ pipeline {
         // own Dockerfile (Stage1: maven:3.9-temurin-21-alpine,
         // Stage2: eclipse-temurin:21-jre-alpine).
         // Tags the image for ALL three registries in one build:
-        //   - Docker Hub : mibtisam/bankapp:<tag>
-        //   - GHCR       : ghcr.io/ibtisam-iq/bankapp:<tag>
-        //   - ECR        : <account>.dkr.ecr.<region>.amazonaws.com/bankapp:<tag>
+        //   - Docker Hub : mibtisam/java-monolith:<tag>
+        //   - GHCR       : ghcr.io/ibtisam-iq/java-monolith:<tag>
+        //   - ECR        : <account>.dkr.ecr.<region>.amazonaws.com/java-monolith:<tag>
         // Building once and tagging avoids rebuilding per registry.
         // ────────────────────────────────────────────────
         stage('Docker Build') {
@@ -326,7 +326,7 @@ pipeline {
 
         // ────────────────────────────────────────────────
         // STAGE 11 — Push to GitHub Container Registry (GHCR)
-        // ghcr.io/ibtisam-iq/bankapp:<tag>
+        // ghcr.io/ibtisam-iq/java-monolith:<tag>
         //
         // Credential setup in Jenkins:
         //   Kind:     Username with password
@@ -359,7 +359,7 @@ pipeline {
         // ────────────────────────────────────────────────
         // STAGE 12 — Push to Nexus Docker Registry
         // Uses path-based routing — no dedicated Docker port needed.
-        // Image URL format: nexus.ibtisam-iq.com/docker-hosted/bankapp:<tag>
+        // Image URL format: nexus.ibtisam-iq.com/docker-hosted/java-monolith:<tag>
         //
         // Pre-requisites in Nexus UI:
         //   1. Create hosted Docker repo with "Path based routing" selected
@@ -394,7 +394,7 @@ pipeline {
         //
         // Pre-requisites:
         //   1. Create ECR repo:
-        //        aws ecr create-repository --repository-name bankapp --region us-east-1
+        //        aws ecr create-repository --repository-name java-monolith --region us-east-1
         //
         //   2. Add AWS credentials to Jenkins:
         //        Kind:     AWS Credentials (requires CloudBees AWS Credentials plugin)
@@ -455,13 +455,13 @@ pipeline {
                         cd cd-repo
 
                         # Once K8s/Helm manifests exist, replace the echo below with:
-                        # sed -i "s|image: ibtisam-iq/bankapp:.*|image: ibtisam-iq/bankapp:${IMAGE_TAG}|g" \\
+                        # sed -i "s|image: ibtisam-iq/java-monolith:.*|image: ibtisam-iq/java-monolith:${IMAGE_TAG}|g" \\
                         #     deployments/java-monolith/deployment.yaml
 
                         echo "IMAGE_TAG=${IMAGE_TAG}" > systems/java-monolith/image.env
 
                         git add systems/java-monolith/image.env
-                        git commit -m "ci: update bankapp image tag to ${IMAGE_TAG} [skip ci]" || echo "Nothing to commit"
+                        git commit -m "ci: update java-monolith image tag to ${IMAGE_TAG} [skip ci]" || echo "Nothing to commit"
                         git push origin main
                     """
                 }
