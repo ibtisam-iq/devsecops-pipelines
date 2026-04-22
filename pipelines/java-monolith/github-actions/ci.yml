@@ -1,0 +1,425 @@
+# =============================================================
+# DevSecOps CI Pipeline — Java Monolith (BankApp)
+# Tool: GitHub Actions
+# Stack: Maven 3.9 · Java 21 · SonarQube · Trivy · Nexus · Docker Hub · GHCR
+# Mirrors: pipelines/java-monolith/jenkins/Jenkinsfile (14 stages)
+# =============================================================
+#
+# Required GitHub Secrets (Settings → Secrets and variables → Actions):
+#
+#   DOCKER_USERNAME       — Docker Hub username  (mibtisam)
+#   DOCKER_PASSWORD       — Docker Hub PAT (read/write/delete)
+#   GHCR_TOKEN            — GitHub PAT with scopes: write:packages, read:packages, delete:packages
+#   NEXUS_USERNAME        — Nexus admin username
+#   NEXUS_PASSWORD        — Nexus admin password
+#   SONAR_TOKEN           — SonarQube user token
+#   SONAR_HOST_URL        — https://sonar.ibtisam-iq.com
+#   GIT_TOKEN             — GitHub PAT with repo scope (for CD repo update)
+#   MAVEN_SETTINGS_XML    — Full contents of your settings.xml (Nexus credentials embedded)
+#
+# NOTE: GITHUB_TOKEN is automatically provided by GitHub Actions — no secret needed for GHCR login.
+# =============================================================
+
+name: DevSecOps CI — Java Monolith
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pipelines/java-monolith/app/**'
+      - 'pipelines/java-monolith/github-actions/ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pipelines/java-monolith/app/**'
+  workflow_dispatch:
+
+# Minimal top-level permissions — every job declares only what it needs
+permissions:
+  contents: read
+
+# Cancel in-progress runs for the same branch (mirrors disableConcurrentBuilds)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # ── App metadata (must match pom.xml)
+  APP_NAME:       bankapp
+  APP_VERSION:    0.0.1-SNAPSHOT
+  GROUP_ID:       com.ibtisamiq
+
+  # ── Docker Hub
+  DOCKER_USER:    mibtisam
+  IMAGE_NAME:     mibtisam/bankapp
+
+  # ── GHCR
+  GHCR_USER:      ibtisam-iq
+  GHCR_IMAGE:     ghcr.io/ibtisam-iq/bankapp
+
+  # ── Nexus Docker (path-based routing — no dedicated port needed)
+  NEXUS_DOCKER:      nexus.ibtisam-iq.com
+  NEXUS_DOCKER_REPO: docker-hosted
+
+  # ── Source submodule path
+  APP_DIR: pipelines/java-monolith/app
+
+  # ── Java / Maven
+  JAVA_VERSION: '21'
+  MAVEN_OPTS: >-
+    -Xmx1g
+    -XX:+TieredCompilation
+    -XX:TieredStopAtLevel=1
+
+jobs:
+
+  # ════════════════════════════════════════════════════════════
+  # JOB 1 — Security & Quality (Stages 1, 3, 4, 5, 6)
+  # Trivy FS Scan → Build & Test → SonarQube → Quality Gate
+  # ════════════════════════════════════════════════════════════
+  ci:
+    name: CI — Build, Test & Scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    permissions:
+      contents:      read        # checkout
+      packages:      write       # push to GHCR
+      pull-requests: write       # SonarQube PR decoration
+      checks:        write       # test reporter
+
+    outputs:
+      image_tag: ${{ steps.versioning.outputs.image_tag }}
+
+    steps:
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 1 — Checkout (with submodules)
+      # Mirrors Jenkins: checkout([$class:'GitSCM', extensions:[SubmoduleOption]])
+      # ──────────────────────────────────────────────────────
+      - name: Checkout — source with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0        # full history required for SonarQube blame info
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 2 — Trivy Filesystem Scan
+      # Runs BEFORE build — fail-fast on CRITICAL findings.
+      # Mirrors Jenkins: trivy fs --scanners secret,vuln,config
+      # aquasecurity/trivy-action@0.30.0 — latest stable (April 2026)
+      # ──────────────────────────────────────────────────────
+      - name: Trivy — filesystem scan (CRITICAL → fail)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type:    fs
+          scan-ref:     ${{ env.APP_DIR }}
+          scanners:     secret,vuln,config
+          severity:     CRITICAL
+          exit-code:    '1'
+          format:       json
+          output:       trivy-fs-report.json
+        continue-on-error: false   # mirrors || true only for HIGH/MEDIUM below
+
+      - name: Trivy — filesystem scan (HIGH/MEDIUM → warn only)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type:    fs
+          scan-ref:     ${{ env.APP_DIR }}
+          scanners:     secret,vuln,config
+          severity:     HIGH,MEDIUM
+          exit-code:    '0'
+          format:       table
+        if: always()               # always run even if CRITICAL scan found issues
+
+      - name: Upload Trivy FS report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-fs-report
+          path: trivy-fs-report.json
+          retention-days: 14
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 3 — Versioning
+      # Mirrors Jenkins: <pom-version>-<short-sha>-<build-number>
+      # GitHub equivalent: <pom-version>-<short-sha>-<run-number>
+      # ──────────────────────────────────────────────────────
+      - name: Versioning — compute image tag
+        id: versioning
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          IMAGE_TAG="${APP_VERSION}-${SHORT_SHA}-${{ github.run_number }}"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "🏷️  Image tag: ${IMAGE_TAG}"
+
+      # ──────────────────────────────────────────────────────
+      # Set up Java 21 + Maven cache
+      # ──────────────────────────────────────────────────────
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      # Write settings.xml from secret — mirrors Jenkins "maven-settings" Config File Provider
+      - name: Configure Maven settings (Nexus credentials)
+        run: |
+          mkdir -p ~/.m2
+          echo "${{ secrets.MAVEN_SETTINGS_XML }}" > ~/.m2/settings.xml
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 4 — Build & Test
+      # mvn clean verify runs compile → test → JaCoCo → package
+      # Mirrors Jenkins: withMaven → sh 'mvn clean verify -B'
+      # ──────────────────────────────────────────────────────
+      - name: Build & Test — mvn clean verify
+        working-directory: ${{ env.APP_DIR }}
+        run: mvn clean verify -B --no-transfer-progress
+
+      # Publish JUnit test results
+      - name: Publish test results
+        uses: mikepenz/action-junit-report@v5
+        if: always()
+        with:
+          report_paths: '${{ env.APP_DIR }}/target/surefire-reports/*.xml'
+          check_name:   JUnit Test Results
+          fail_on_failure: false
+
+      # Upload JaCoCo coverage report
+      - name: Upload JaCoCo coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jacoco-report
+          path: ${{ env.APP_DIR }}/target/site/jacoco/
+          retention-days: 14
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 5 — SonarQube Analysis
+      # Mirrors Jenkins: withSonarQubeEnv → mvn sonar:sonar
+      # SonarQube official action injects SONAR_TOKEN and SONAR_HOST_URL.
+      # sonarsource/sonarqube-scan-action@v5 — latest stable (April 2026)
+      # ──────────────────────────────────────────────────────
+      - name: SonarQube — static analysis
+        working-directory: ${{ env.APP_DIR }}
+        env:
+          SONAR_TOKEN:    ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          mvn sonar:sonar \
+            -Dsonar.projectKey=IbtisamIQbankapp \
+            -Dsonar.projectName=IbtisamIQbankapp \
+            -Dsonar.host.url="${SONAR_HOST_URL}" \
+            -Dsonar.token="${SONAR_TOKEN}" \
+            -Dsonar.java.binaries=target/classes \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+            -B --no-transfer-progress
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 6 — Quality Gate
+      # Polls SonarQube until the webhook result is available.
+      # Mirrors Jenkins: waitForQualityGate abortPipeline: true
+      # sonarsource/sonarqube-quality-gate-action@v1.1.0
+      # ──────────────────────────────────────────────────────
+      - name: SonarQube — Quality Gate check
+        uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN:    ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 7 — Publish JAR to Nexus
+      # Mirrors Jenkins: mvn deploy -DskipTests
+      # ──────────────────────────────────────────────────────
+      - name: Publish JAR to Nexus
+        working-directory: ${{ env.APP_DIR }}
+        run: mvn deploy -DskipTests -B --no-transfer-progress
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 8 — Docker Build
+      # Uses docker/build-push-action@v6 (Buildx) — April 2026 standard.
+      # Mirrors Jenkins: docker build with OCI labels + multi-registry tags.
+      # Build once, tag for Docker Hub + GHCR + Nexus.
+      # ──────────────────────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Build — build image (no push yet)
+        uses: docker/build-push-action@v6
+        with:
+          context:    ${{ env.APP_DIR }}
+          push:       false
+          load:       true          # load into local docker daemon for Trivy scan + push
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.GHCR_IMAGE }}:${{ env.IMAGE_TAG }}
+            ${{ env.GHCR_IMAGE }}:latest
+            ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/${{ env.APP_NAME }}:latest
+          build-args: |
+            SERVER_PORT=8000
+          labels: |
+            org.opencontainers.image.version=${{ env.IMAGE_TAG }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 9 — Trivy Image Scan
+      # Scans the built image BEFORE pushing — fail-fast principle.
+      # Mirrors Jenkins: trivy image --exit-code 1 --severity CRITICAL
+      # ──────────────────────────────────────────────────────
+      - name: Trivy — image scan (CRITICAL → fail)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type:    image
+          image-ref:    ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          severity:     CRITICAL
+          exit-code:    '1'
+          format:       json
+          output:       trivy-image-report.json
+
+      - name: Trivy — image scan (HIGH/MEDIUM/LOW → warn only)
+        uses: aquasecurity/trivy-action@0.30.0
+        if: always()
+        with:
+          scan-type:    image
+          image-ref:    ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          severity:     HIGH,MEDIUM,LOW
+          exit-code:    '0'
+          format:       table
+
+      - name: Upload Trivy image report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-image-report
+          path: trivy-image-report.json
+          retention-days: 14
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 10 — Push to Docker Hub
+      # Mirrors Jenkins: withCredentials → docker login → docker push
+      # docker/login-action@v3 — latest stable (April 2026)
+      # ──────────────────────────────────────────────────────
+      - name: Docker Hub — login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Docker Hub — push image
+        run: |
+          docker push ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker push ${{ env.IMAGE_NAME }}:latest
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 11 — Push to GitHub Container Registry (GHCR)
+      # Uses GITHUB_TOKEN (automatic, no secret needed).
+      # Mirrors Jenkins: ghcr-creds → docker login ghcr.io
+      # ──────────────────────────────────────────────────────
+      - name: GHCR — login
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: GHCR — push image
+        run: |
+          docker push ${{ env.GHCR_IMAGE }}:${{ env.IMAGE_TAG }}
+          docker push ${{ env.GHCR_IMAGE }}:latest
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 12 — Push to Nexus Docker Registry
+      # Path-based routing: nexus.ibtisam-iq.com/docker-hosted/bankapp:<tag>
+      # Mirrors Jenkins: nexus-creds → docker login → docker push
+      # ──────────────────────────────────────────────────────
+      - name: Nexus — login
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.NEXUS_DOCKER }}
+          username: ${{ secrets.NEXUS_USERNAME }}
+          password: ${{ secrets.NEXUS_PASSWORD }}
+
+      - name: Nexus — push image (path-based routing)
+        run: |
+          docker push ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
+          docker push ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/${{ env.APP_NAME }}:latest
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 13 — Push to AWS ECR [PLANNED — commented out]
+      # Uncomment once ECR repo and AWS credentials are ready.
+      #
+      # Required secrets:
+      #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_ACCOUNT_ID
+      #
+      # - name: AWS ECR — login
+      #   uses: aws-actions/amazon-ecr-login@v2
+      #   with:
+      #     aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+      #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      #     aws-region:            ${{ secrets.AWS_REGION }}
+      #
+      # - name: AWS ECR — tag and push
+      #   run: |
+      #     ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com"
+      #     ECR_IMAGE="${ECR_REGISTRY}/${{ env.APP_NAME }}"
+      #     docker tag ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} "${ECR_IMAGE}:${{ env.IMAGE_TAG }}"
+      #     docker tag ${{ env.IMAGE_NAME }}:latest               "${ECR_IMAGE}:latest"
+      #     docker push "${ECR_IMAGE}:${{ env.IMAGE_TAG }}"
+      #     docker push "${ECR_IMAGE}:latest"
+      # ──────────────────────────────────────────────────────
+
+      # ──────────────────────────────────────────────────────
+      # STAGE 14 — Update CD Repo (GitOps handoff)
+      # Commits new image tag into platform-engineering-systems
+      # so ArgoCD detects the change and triggers deployment.
+      # Mirrors Jenkins: git clone → sed → git commit → git push
+      # Only runs on push to main (not on PRs).
+      # ──────────────────────────────────────────────────────
+      - name: Update CD repo — image tag GitOps handoff
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+        run: |
+          git config --global user.email "github-actions@ibtisam-iq.com"
+          git config --global user.name  "GitHub Actions CI"
+
+          git clone https://ibtisam-iq:${GIT_TOKEN}@github.com/ibtisam-iq/platform-engineering-systems.git cd-repo
+
+          cd cd-repo
+
+          # Once K8s/Helm manifests exist, replace the echo below with:
+          # sed -i "s|image: ibtisam-iq/bankapp:.*|image: ibtisam-iq/bankapp:${IMAGE_TAG}|g" \
+          #     deployments/java-monolith/deployment.yaml
+
+          mkdir -p systems/java-monolith
+          echo "IMAGE_TAG=${IMAGE_TAG}" > systems/java-monolith/image.env
+
+          git add systems/java-monolith/image.env
+          git commit -m "ci: update bankapp image tag to ${IMAGE_TAG} [skip ci]" || echo "Nothing to commit"
+          git push origin main
+
+      # ──────────────────────────────────────────────────────
+      # Cleanup — remove local Docker images
+      # Mirrors Jenkins post { always { docker rmi ... } }
+      # ──────────────────────────────────────────────────────
+      - name: Cleanup — remove local Docker images
+        if: always()
+        run: |
+          docker rmi ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}                                                              || true
+          docker rmi ${{ env.IMAGE_NAME }}:latest                                                                            || true
+          docker rmi ${{ env.GHCR_IMAGE }}:${{ env.IMAGE_TAG }}                                                             || true
+          docker rmi ${{ env.GHCR_IMAGE }}:latest                                                                           || true
+          docker rmi ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}         || true
+          docker rmi ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/${{ env.APP_NAME }}:latest                       || true
+          rm -rf cd-repo
