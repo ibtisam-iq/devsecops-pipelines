@@ -30,11 +30,13 @@ pipelines/java-monolith/
 ├── jenkins/
 │   └── Jenkinsfile             ← Jenkins declarative pipeline (fully validated end-to-end)
 ├── github-actions/
-│   └── ci.yml                  ← GitHub Actions workflow (same stages, different syntax) [planned]
+│   └── ci.yml                  ← Reference copy only (see note below)
 └── README.md                   ← This file
 ```
 
-The `app/` directory is not application code I own — it is a pinned Git submodule pointing to the application source repository. When the pipeline runs, Jenkins checks out this entire repo with submodules initialised, then uses `dir('pipelines/java-monolith/app')` to run all Maven and Docker commands in the correct subdirectory.
+> **GitHub Actions placement decision:** The `ci.yml` that actually runs lives in the application source repository at [java-monolith-app/.github/workflows/ci.yml](https://github.com/ibtisam-iq/java-monolith-app/blob/main/.github/workflows/ci.yml). GitHub Actions triggers on commits to the source repo, and the app code is already at the root — no submodule checkout needed. The copy here at `github-actions/ci.yml` is a **reference and documentation copy** kept in sync for comparison with the Jenkinsfile. For every future application onboarded, the same rule applies: `ci.yml` lives in the source repo; the Jenkinsfile lives here.
+
+The `app/` directory is not application code I own — it is a pinned Git submodule pointing to the application source repository. When the Jenkins pipeline runs, it checks out this entire repo with submodules initialised, then uses `dir('pipelines/java-monolith/app')` to run all Maven and Docker commands in the correct subdirectory.
 
 ---
 
@@ -60,6 +62,17 @@ Credential IDs used in the Jenkinsfile (configured in Jenkins → Credentials):
 | `docker-creds` | Username/Password | Docker Hub push |
 | `ghcr-creds` | Username/Password | GHCR push |
 | `nexus-creds` | Username/Password | Nexus Docker registry push |
+
+GitHub Actions secrets (configured in java-monolith-app → Settings → Secrets):
+
+| Secret | Used for |
+|---|---|
+| `DOCKER_USERNAME` / `DOCKER_PASSWORD` | Docker Hub push |
+| `NEXUS_USERNAME` / `NEXUS_PASSWORD` | Nexus Docker push |
+| `SONAR_TOKEN` / `SONAR_HOST_URL` | SonarQube analysis |
+| `GIT_TOKEN` | CD repo update |
+| `MAVEN_SETTINGS_XML` | Nexus Maven credentials |
+| `GITHUB_TOKEN` | GHCR push (automatic — no setup needed) |
 
 ---
 
@@ -361,9 +374,9 @@ Without cleanup, Docker images and cloned repos accumulate across builds and fil
 
 ## GitHub Actions Pipeline
 
-The `github-actions/ci.yml` workflow covers the same stage sequence as the Jenkinsfile — same tools, same credential pattern, different runner model. Jenkins uses a persistent self-hosted server; GitHub Actions uses ephemeral cloud runners.
+The GitHub Actions `ci.yml` covers the same 14-stage sequence as the Jenkinsfile — same tools, same credential pattern, different runner model. Jenkins uses a persistent self-hosted server; GitHub Actions uses ephemeral cloud runners.
 
-> Status: planned. The Jenkinsfile is the primary pipeline and has been fully validated. The GitHub Actions workflow will be written next.
+**Placement:** The workflow that actually runs lives in the source repository at [java-monolith-app/.github/workflows/ci.yml](https://github.com/ibtisam-iq/java-monolith-app/blob/main/.github/workflows/ci.yml). The copy here at `github-actions/ci.yml` is kept as a **reference and documentation copy** — useful for comparing the two pipeline implementations side by side. This is the established convention for every application in this repo: `ci.yml` belongs to the source repo, Jenkinsfile belongs here.
 
 ---
 
